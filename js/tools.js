@@ -15,6 +15,10 @@ const TOOL_DEFS = [
   { id: 'gradient', name: 'グラデーション', key: 'j', icon: 'gradient' },
   { id: 'shape', name: '図形', key: 'u', icon: 'shape' },
   { id: 'text', name: 'テキスト', key: 't', icon: 'text' },
+  { id: 'frame', name: 'コマ枠', key: 'k', icon: 'frame' },
+  { id: 'balloon', name: 'フキダシ', key: 'f', icon: 'balloon' },
+  { id: 'fx', name: '効果線', key: 'l', icon: 'fx' },
+  { id: 'ruler', name: '定規', key: 'r', icon: 'ruler' },
   { id: 'eyedropper', name: 'スポイト', key: 'i', icon: 'dropper' },
   { id: 'move', name: 'レイヤー移動', key: 'v', icon: 'move' },
   { id: 'hand', name: '手のひら', key: 'h', icon: 'hand' },
@@ -36,6 +40,11 @@ class BrushTool {
     const app = this.app, layer = app.doc.active;
     const b = app.brush;
     this.stroke = new BrushStroke(app.doc, layer, b, app.color.main, { gamma: app.pressureGamma(), transparent: app.color.transparent && !b.erase, target: app.doc.maskEdit ? 'mask' : 'tiles' });
+    // 定規: 対称は写す、それ以外は吸い付き
+    const r = app.doc.ruler;
+    this.stroke.mirrors = r && r.type === 'symmetry' && app.settings.snap ? symmetryMatrices(r) : null;
+    this.snap = RulerSnap.begin(app, p);
+    if (this.snap) { this.stroke.add(this.snap.start); return; }
     // Shift: 前のストロークの終わりから直線
     if (p.shift && this.lastEnd && this.lastEnd.layer === layer) {
       const a = this.lastEnd;
@@ -43,9 +52,14 @@ class BrushTool {
       for (let i = 0; i <= n; i++) this.stroke.add({ ...p, x: lerp(a.x, p.x, i / n), y: lerp(a.y, p.y, i / n) });
     } else this.stroke.add(p);
   }
-  move(p) { if (this.stroke) this.stroke.add(p); }
+  move(p) {
+    if (!this.stroke) return;
+    if (this.snap) { for (const q of this.snap.feed(p)) this.stroke.add(q); }
+    else this.stroke.add(p);
+  }
   up(p) {
     if (!this.stroke) return;
+    if (this.snap) { for (const q of this.snap.feed(p)) this.stroke.add(q); this.snap = null; }
     this.stroke.end();
     this.lastEnd = { x: p.x, y: p.y, layer: this.stroke.layer };
     this.stroke = null;

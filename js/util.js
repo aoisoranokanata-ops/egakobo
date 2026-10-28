@@ -1,7 +1,7 @@
 'use strict';
 /* 共通の小道具。トップレベルの宣言は全 js で共有される。 */
 
-const APP_VERSION = '0.2.0';
+const APP_VERSION = '0.3.0';
 const TILE = 256;
 const LS = 'egakobo.';
 

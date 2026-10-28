@@ -43,7 +43,16 @@ function vectorCommit(bs) {
     TilePool.put(st);
     doc.invalidateKey(k); doc.markTile(layer, k);
   }
-  const before = layer.strokes, after = [...before, stk];
+  const extra = (bs.mirrors || []).map((m) => {
+    const f = new Float32Array(stk.pts);
+    for (let i = 0; i < f.length; i += 5) {
+      const x = f[i], y = f[i + 1];
+      f[i] = m[0] * x + m[2] * y + m[4]; f[i + 1] = m[1] * x + m[3] * y + m[5];
+      if (!isNaN(f[i + 4])) { const a = f[i + 4]; f[i + 4] = Math.atan2(m[1] * Math.cos(a) + m[3] * Math.sin(a), m[0] * Math.cos(a) + m[2] * Math.sin(a)); }
+    }
+    return makeVecStroke(f, b, bs.color);
+  });
+  const before = layer.strokes, after = [...before, stk, ...extra];
   layer.strokes = after;
   layer.ver++;
   doc.history.push(new SwapCmd('ベクター線', layer, 'strokes', before, after, rerenderVectorDiff));

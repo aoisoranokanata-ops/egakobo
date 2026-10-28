@@ -26,8 +26,8 @@ const BLEND_MODES = [
 const BLEND_OP = Object.fromEntries(BLEND_MODES.map((m) => [m.key, m.op]));
 
 /* 構造の履歴・保存で写す属性（text・adj は差し替えて使う＝中身を書き換えない） */
-const LAYER_PROPS = ['name', 'visible', 'opacity', 'blend', 'clip', 'locked', 'alphaLock', 'ref', 'draft', 'open', 'color', 'label', 'maskOn', 'text', 'adj'];
-const KIND_NAMES = { raster: 'ラスター', vector: 'ベクター', text: 'テキスト', adjust: '色調補正', folder: 'フォルダー', paper: '用紙' };
+const LAYER_PROPS = ['name', 'visible', 'opacity', 'blend', 'clip', 'locked', 'alphaLock', 'ref', 'draft', 'open', 'color', 'label', 'maskOn', 'text', 'adj', 'frame', 'tone', 'mono'];
+const KIND_NAMES = { raster: 'ラスター', vector: 'ベクター', text: 'テキスト', adjust: '色調補正', balloon: 'フキダシ', folder: 'フォルダー', paper: '用紙' };
 
 let _layerSeq = 1;
 function bumpLayerSeq(n) { if (n >= _layerSeq) _layerSeq = n + 1; }
@@ -51,7 +51,11 @@ class Layer {
     this.maskOn = true;
     this.text = null;              // テキストの設定（text.js）
     this.adj = null;               // 色調補正の設定 {type, params}（adjust.js）
-    this.tiles = kind === 'raster' || kind === 'vector' || kind === 'text' ? new Map() : null;
+    this.frame = null;             // コマ枠（フォルダー）{pts, width, color}（manga.js）
+    this.tone = null;              // トーン {lpi, angle, shape, color}
+    this.mono = false;             // 表現色モノクロ（2値）
+    this.tiles = kind === 'raster' || kind === 'vector' || kind === 'text' || kind === 'balloon' ? new Map() : null;
+    this.balloons = kind === 'balloon' ? [] : null;
     this.children = kind === 'folder' || kind === 'root' ? [] : null;
     this.strokes = kind === 'vector' ? [] : null;   // ベクターの線（vector.js）
     this.mask = null;              // Map（隠す量）| null
@@ -87,6 +91,8 @@ class Doc {
     this.stroke = null;            // 描いている途中のストローク（compose.js が重ねて見せる）
     this.cut = null;               // 変形中: {layer, sel} 元の画素を隠す
     this.preview = null;           // 補正・フィルターの試し表示: {layer, tiles: Map}
+    this.ruler = null;             // 定規（ruler.js）
+    this.monoView = false;         // 画面をモノクロ2値で見る
     this.unsaved = new Set();      // 'layerId/tx,ty'（マスクは 'layerId/m:tx,ty'）
     this.metaDirty = true;
     this.cols = Math.ceil(width / TILE); this.rows = Math.ceil(height / TILE);
@@ -218,7 +224,7 @@ class Doc {
 
   // ---- 構造
   snapshot() {
-    const snap = (node) => ({ layer: node, props: Object.fromEntries([...LAYER_PROPS, 'kind'].map((k) => [k, node[k]])), mask: node.mask, strokes: node.strokes, children: node.children ? node.children.map(snap) : null });
+    const snap = (node) => ({ layer: node, props: Object.fromEntries([...LAYER_PROPS, 'kind'].map((k) => [k, node[k]])), mask: node.mask, strokes: node.strokes, balloons: node.balloons, children: node.children ? node.children.map(snap) : null });
     return { tree: snap(this.root), activeId: this.activeId };
   }
   restore(s) {
@@ -226,6 +232,7 @@ class Doc {
       Object.assign(n.layer, n.props);
       n.layer.mask = n.mask;
       n.layer.strokes = n.strokes;
+      n.layer.balloons = n.balloons;
       if (n.children) n.layer.children = n.children.map((c) => { apply(c); return c.layer; });
     };
     apply(s.tree);

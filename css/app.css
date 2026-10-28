@@ -238,3 +238,9 @@ input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 18px;
 .thumb.mask.off { opacity: .35; }
 .ficon.adj { font-size: 22px; color: #e8b84d; }
 .hint.warn { color: #f0c36b; }
+
+/* ---- フェーズ3 */
+.tool { height: 42px; }
+.ficon.frame { font-size: 24px; color: #8fb8ff; }
+.tb-btn.snap { font-size: 12px; padding: 0 8px; border: 1px solid #e4007f55; color: #f39ac8; }
+.tb-btn.snap.on { background: #e4007f; color: #fff; }

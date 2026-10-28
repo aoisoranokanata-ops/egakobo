@@ -7,7 +7,7 @@
    変わったタイルだけ書く（doc.unsaved）。どのレイヤーが保存済みかは doc._storedIds で持つ。 */
 
 const FORMAT = 'egakobo';
-const FORMAT_VERSION = 2;          // 2: ベクター・テキスト・色調補正レイヤー・マスク
+const FORMAT_VERSION = 3;          // 2: ベクター・テキスト・色調補正レイヤー・マスク 3: コマ枠・トーン・フキダシ・定規
 
 const Store = {
   db: null,
@@ -163,12 +163,13 @@ function docMeta(doc) {
     if (l.tiles) o.tiles = [...l.tiles.keys()];
     if (l.mask) o.mask = [...l.mask.keys()];
     if (l.strokes) o.strokes = vecToJSON(l.strokes);
+    if (l.balloons) o.balloons = l.balloons;
     if (l.children) o.children = l.children.map(ser);
     return o;
   };
   return {
     format: FORMAT, version: FORMAT_VERSION, width: doc.width, height: doc.height, dpi: doc.dpi, kind: doc.kind,
-    name: doc.name, active: doc.activeId, layers: doc.root.children.map(ser), app: APP_VERSION,
+    name: doc.name, active: doc.activeId, layers: doc.root.children.map(ser), app: APP_VERSION, ruler: doc.ruler,
   };
 }
 /* JSON ＋ タイル画像の取り出し方 → 文書 */
@@ -189,10 +190,12 @@ async function docFromMeta(meta, getTile, name) {
     if (l.tiles) for (const k of o.tiles || []) jobs.push([l.tiles, o.id, k, k]);
     if (o.mask) { l.mask = new Map(); for (const k of o.mask) jobs.push([l.mask, o.id, 'm:' + k, k]); }
     if (o.kind === 'vector') l.strokes = vecFromJSON(o.strokes);
+    if (o.kind === 'balloon') { l.balloons = o.balloons || []; for (const b of l.balloons) if (b.id >= _balloonSeq) _balloonSeq = b.id + 1; }
     if (o.children) l.children = o.children.map(build);
     return l;
   };
   doc.root.children = meta.layers.map(build);
+  doc.ruler = meta.ruler || null;
   if (!doc.paper) { const p = new Layer('paper', '用紙'); doc.root.children.unshift(p); }
   // タイルを並行して読む（多すぎると iPad で詰まるので 16 本ずつ）
   for (let i = 0; i < jobs.length; i += 16) {

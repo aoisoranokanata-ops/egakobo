@@ -78,6 +78,7 @@ function clearTemp(c) {
 function composeTile(doc, g, tx, ty, opts = {}) {
   const o = { exportMode: false, filter: null, paper: true, preview: true, ...opts };
   renderList(doc, doc.root.children, g, tx, ty, 0, o);
+  if (o.preview && doc.monoView && !o.exportMode) monoView(g);         // 画面のモノクロ2値表示
   // 文書の外にはみ出した画素は見せない
   const x0 = tx * TILE, y0 = ty * TILE;
   if (x0 + TILE > doc.width) g.clearRect(doc.width - x0, 0, TILE, TILE);
@@ -116,9 +117,10 @@ function renderList(doc, list, target, tx, ty, d, o) {
     if (L.kind === 'folder') {
       const anyClip = clips.some((c) => included(c, o));
       const hasMask = L.mask && L.maskOn && (L.mask.size || (o.preview && doc.stroke && doc.stroke.layer === L));
-      if (L.blend === 'passthrough' && L.opacity === 1 && !anyClip && !hasMask) { renderList(doc, L.children, target, tx, ty, d + 1, o); continue; }
+      if (L.blend === 'passthrough' && L.opacity === 1 && !anyClip && !hasMask && !L.frame) { renderList(doc, L.children, target, tx, ty, d + 1, o); continue; }
       const fg = clearTemp(T.F);
       renderList(doc, L.children, fg, tx, ty, d + 1, o);
+      if (L.frame) applyFrame(T.F, L.frame, tx, ty);          // コマ枠: 枠の外を隠して枠線を描く
       src = applyMask(doc, L, T.F, key, T.A, o);
     } else {
       src = layerSource(doc, L, tx, ty, T.A, o);
@@ -197,6 +199,8 @@ function layerSource(doc, L, tx, ty, tmp, o) {
     }
   }
   if (!base) return null;
+  if (L.tone) base = toneTile(base, tmp, L.tone, tx, ty, doc.dpi);        // トーン: 濃さを網点に
+  else if (L.mono) base = monoTile(base, tmp);                            // 表現色モノクロ: 2値に
   return applyMask(doc, L, base, k, tmp, o);
 }
 

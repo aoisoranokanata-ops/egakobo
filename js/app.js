@@ -58,6 +58,11 @@ class App {
       grad: { ...GRAD_DEFAULTS, ...(ts.grad || {}) },
       vec: { mode: 'widen', size: 30, amount: 20, ...(ts.vec || {}) },
       text: ts.text || null,
+      frame: { ...FRAME_DEFAULTS, ...(ts.frame || {}) },
+      fx: { ...FX_DEFAULTS, ...(ts.fx || {}) },
+      balloon: { ...BALLOON_DEFAULTS, ...(ts.balloon || {}) },
+      ruler: { sub: 'line', count: 1, mirror: true, ...(ts.ruler || {}) },
+      tone: ts.tone || null,
     };
     this.doc = null;
     this.screen = 'gallery';
@@ -81,6 +86,10 @@ class App {
     this.tools.gradient = new GradientTool(this);
     this.tools.text = new TextTool(this);
     this.tools.vecedit = new VectorWidthTool(this);
+    this.tools.frame = new FrameTool(this);
+    this.tools.fx = new EffectLineTool(this);
+    this.tools.balloon = new BalloonTool(this);
+    this.tools.ruler = new RulerTool(this);
     this.vecErase = new VectorEraseTool(this);
     this.transformTool = new TransformTool(this);
     this.adjustPanel = new AdjustPanel(this);
@@ -105,7 +114,11 @@ class App {
     window.addEventListener('pagehide', () => this.saveNow());
   }
   saveSettings() { saveLS('settings', this.settings); }
-  saveTools() { const t = this.toolOpts; saveLS('tools', { current: t.current, sub: t.sub, brushSaved: t.brushSaved, fillSub: t.fillSub, fillSaved: t.fillSaved, eyedropper: t.eyedropper, sel: t.sel, shape: t.shape, grad: t.grad, vec: t.vec, text: t.text }); }
+  saveTools() { const t = this.toolOpts; saveLS('tools', { current: t.current, sub: t.sub, brushSaved: t.brushSaved, fillSub: t.fillSub, fillSaved: t.fillSaved, eyedropper: t.eyedropper, sel: t.sel, shape: t.shape, grad: t.grad, vec: t.vec, text: t.text, frame: t.frame, fx: t.fx, balloon: t.balloon, ruler: t.ruler, tone: t.tone }); }
+  get frameOpts() { return this.toolOpts.frame; }
+  get fxOpts() { return this.toolOpts.fx; }
+  get balloonOpts() { return this.toolOpts.balloon; }
+  get rulerOpts() { return this.toolOpts.ruler; }
   get selOpts() { return this.toolOpts.sel; }
   get shapeOpts() { return this.toolOpts.shape; }
   get gradOpts() { return this.toolOpts.grad; }
@@ -169,6 +182,7 @@ class App {
     if (this.adjustPanel.open) return '色調補正のパネルを閉じてから描いてください（OK かキャンセル）';
     if (this.textPanel.open && !(tool instanceof TextTool)) return 'テキストの編集を終えてください（OK）';
     if (tool instanceof NullTool || tool instanceof EyedropperTool || tool instanceof TransformTool || tool instanceof TextTool) return null;
+    if (tool instanceof FrameTool || tool instanceof RulerTool || tool instanceof EffectLineTool || tool instanceof BalloonTool) return null;
     const doc = this.doc, a = doc.active;
     if (tool instanceof SelectTool) return tool.o.sub === 'wand' && tool.o.ref === 'layer' && (!a || !a.hasTiles) ? '自動選択（編集レイヤー）は描いてあるレイヤーで使います' : null;
     if (!a || a.kind === 'paper') return '描くレイヤーを選んでください';
@@ -353,7 +367,20 @@ class App {
     $('#btnUndo').disabled = !(h && h.canUndo);
     $('#btnRedo').disabled = !(h && h.canRedo);
   }
-  onViewFlags() { $('#btnFlip').classList.toggle('on', this.view.flip); }
+  onViewFlags() {
+    $('#btnFlip').classList.toggle('on', this.view.flip);
+    const r = this.doc && this.doc.ruler;
+    $('#btnSnap').hidden = !r;
+    $('#btnSnap').classList.toggle('on', !!(r && this.settings.snap));
+  }
+  toggleSnap() { this.settings.snap = !this.settings.snap; this.saveSettings(); this.onViewFlags(); this.view.request(); toast(this.settings.snap ? '定規に吸い付きます' : '定規に吸い付きません', { ms: 900 }); }
+  toggleMonoView() { const d = this.doc; if (!d) return; d.monoView = !d.monoView; d.invalidateAll(); this.view.request(); toast(d.monoView ? 'モノクロ2値で表示しています（印刷の見え方）' : 'カラーで表示しています', { ms: 1400 }); }
+  async exportMono() {
+    const d = this.doc;
+    if (!d) return;
+    this.busy('2値 PNG を作っています…');
+    try { const b = await encodePNG1bit(d); this.busy(null); await shareOrDownload(b, `${d.name}_2値.png`); } catch (e) { this.busy(null); toast('書き出せません: ' + e.message, { error: true }); }
+  }
 
   // ---- 保存
   scheduleSave() {
@@ -563,6 +590,7 @@ class App {
         '-',
         ['PNG で書き出す', () => this.exportImage('png')],
         ['JPEG で書き出す', () => this.exportImage('jpeg')],
+        ['2値 PNG（モノクロ原稿・1ビット）で書き出す', () => this.exportMono()],
         ['作品ファイル（.egk）で書き出す', () => this.exportEgkCurrent()],
         '-',
         ['今すぐ保存', async () => { await this.saveNow(); if (this.saveState === 'saved') toast('保存しました'); }],
@@ -603,6 +631,23 @@ class App {
         ...ADJUSTMENTS.filter((a) => a.key !== 'invert').map((a) => [a.label + '（補正レイヤー）', () => this.runAdjust(a.key, true)]),
       ],
       filter: FILTERS.map((f) => [f.label, () => this.runAdjust(f.key)]),
+      manga: [
+        ['コマ枠を作成（基本枠）', () => FrameOps.createDialog(this)],
+        ['コマ枠ツール（枠線分割）', () => { this.setTool('frame'); }],
+        '-',
+        ['トーンを貼る（選択範囲）', () => ToneOps.dialog(this)],
+        ['作業レイヤーをトーンにする／やめる', () => ToneOps.toggle(this)],
+        ['トーンの設定', () => { const a = d().active; if (a && a.tone) ToneOps.dialog(this, { layer: a }); else toast('トーンのレイヤーを選んでください'); }],
+        ['作業レイヤーをモノクロ（2値）にする／戻す', () => { const a = d().active; if (a && a.hasTiles) d().setProps(a, { mono: !a.mono }, '表現色'); }],
+        '-',
+        ['効果線（集中線・流線・ウニフラ）', () => this.setTool('fx')],
+        ['フキダシ', () => this.setTool('balloon')],
+        ['定規', () => this.setTool('ruler')],
+        [this.settings.snap ? '定規に吸い付かない' : '定規に吸い付く', () => this.toggleSnap()],
+        '-',
+        ['モノクロ2値で表示する／戻す', () => this.toggleMonoView()],
+        ['2値 PNG（1ビット）で書き出す', () => this.exportMono()],
+      ],
       layer: [
         ['新規ラスターレイヤー', () => LayerOps.add(d()), '⇧⌘N'],
         ['新規フォルダー', () => LayerOps.add(d(), 'folder')],
@@ -696,6 +741,7 @@ class App {
     $('#btnRedo').onclick = () => this.redo();
     $('#btnFit').onclick = () => { this.view.setRotation(0); this.view.fit(); };
     $('#btnFlip').onclick = () => this.view.toggleFlip();
+    $('#btnSnap').onclick = () => this.toggleSnap();
     $('#btnSide').onclick = () => { this.settings.rightOpen = !this.settings.rightOpen; this.saveSettings(); this.applyPanels(); };
     $('#saveState').onclick = () => this.saveNow();
     $('#docTitle').onclick = () => this.renameDoc();
@@ -733,7 +779,7 @@ class App {
       if (k === 'tab') { e.preventDefault(); this.togglePanels(); return; }
       if (k === 'x') { this.color.swap(); return; }
       if (k === 'c') { this.color.setTransparent(!this.color.transparent); return; }
-      if (k === 'delete' || k === 'backspace') { SelOps.clear(this.doc); return; }
+      if (k === 'delete' || k === 'backspace') { if (this.toolName === 'balloon' && this.tools.balloon.selId != null) this.tools.balloon.removeSelected(); else SelOps.clear(this.doc); return; }
       if (k === 'enter') {
         if (this.transforming) this.transformTool.finish(true);
         else if (this.tools.select.poly) this.tools.select.closePoly();
@@ -750,7 +796,7 @@ class App {
         return;
       }
       if (k === 'h' && e.shiftKey) { this.view.toggleFlip(); return; }
-      if (k === 'r') { this.view.rotateBy((e.shiftKey ? -1 : 1) * Math.PI / 12); return; }
+      if (k === 'r' && e.shiftKey) { this.view.rotateBy(Math.PI / 12); return; }
       const t = TOOL_DEFS.find((d) => d.key === k);
       if (t) this.setTool(t.id);
     });

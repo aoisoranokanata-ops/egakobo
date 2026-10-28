@@ -42,12 +42,14 @@
       <button class="tb-btn" data-menu="select">選択範囲</button>
       <button class="tb-btn" data-menu="adjust">色調補正</button>
       <button class="tb-btn" data-menu="filter">フィルター</button>
+      <button class="tb-btn" data-menu="manga">マンガ</button>
       <button class="tb-btn" data-menu="view">表示</button>
     </nav>
     <div class="tb-title"><button id="docTitle" class="doc-title" title="作品名を変更"></button><button id="saveState" class="save-state saved">保存済み</button></div>
     <div class="tb-right">
       <button class="tb-btn icon" id="btnFit" title="全体を表示（回転も戻す）">⤢</button>
       <button class="tb-btn icon" id="btnFlip" title="左右反転（Shift+H）">⇋</button>
+      <button class="tb-btn snap" id="btnSnap" title="定規に吸い付く／吸い付かない" hidden>定規</button>
       <span class="tb-gap"></span>
       <button class="tb-btn icon big" id="btnUndo" title="取り消し（2本指タップ）">↶</button>
       <button class="tb-btn icon big" id="btnRedo" title="やり直し（3本指タップ）">↷</button>
@@ -88,6 +90,8 @@
 <script src="js/tools.js"></script>
 <script src="js/shapes.js"></script>
 <script src="js/seltools.js"></script>
+<script src="js/manga.js"></script>
+<script src="js/ruler.js"></script>
 <script src="js/view.js"></script>
 <script src="js/color.js"></script>
 <script src="js/layers.js"></script>

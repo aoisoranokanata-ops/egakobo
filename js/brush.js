@@ -179,7 +179,15 @@ class BrushStroke {
     this.dabs.push(d);
     this.drawDab(d);
   }
+  /* 対称定規: 写した点も描く */
   drawDab(d) {
+    this.drawOne(d);
+    if (this.mirrors) for (const m of this.mirrors) {
+      const ca = Math.cos(d.ang), sa = Math.sin(d.ang);
+      this.drawOne({ ...d, x: m[0] * d.x + m[2] * d.y + m[4], y: m[1] * d.x + m[3] * d.y + m[5], ang: Math.atan2(m[1] * ca + m[3] * sa, m[0] * ca + m[2] * sa) });
+    }
+  }
+  drawOne(d) {
     const doc = this.doc, b = this.b;
     let r = d.s / 2, a = d.a;
     if (r < 0.5) { a *= (r * 2) * (r * 2); r = 0.5; }    // 細すぎる線は薄く（途切れないように）

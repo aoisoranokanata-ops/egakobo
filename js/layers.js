@@ -27,13 +27,14 @@ const LayerOps = {
     if (l.tiles) for (const [k, t] of l.tiles) c.tiles.set(k, copyTile(t));
     if (l.mask) { c.mask = new Map(); for (const [k, t] of l.mask) c.mask.set(k, copyTile(t)); }
     if (l.strokes) c.strokes = l.strokes.slice();
+    if (l.balloons) c.balloons = l.balloons.slice();
     if (l.children) c.children = l.children.map((x) => this.clone(x));
     return c;
   },
   /* テキスト・ベクターを普通のラスターに */
   rasterize(doc, l = doc.active) {
-    if (!l || (l.kind !== 'text' && l.kind !== 'vector')) { toast('テキスト・ベクターレイヤーを選んでください'); return false; }
-    doc.structEdit('ラスタライズ', () => { l.kind = 'raster'; l.text = null; l.strokes = null; });
+    if (!l || (l.kind !== 'text' && l.kind !== 'vector' && l.kind !== 'balloon')) { toast('テキスト・ベクター・フキダシのレイヤーを選んでください'); return false; }
+    doc.structEdit('ラスタライズ', () => { l.kind = 'raster'; l.text = null; l.strokes = null; l.balloons = null; });
     return true;
   },
   // ---- マスク
@@ -245,7 +246,7 @@ class LayerPanel {
     if (l.clip) r.append(el('span', { class: 'clipmark' }, '┗'));
     if (l.isFolder) {
       r.append(el('button', { class: 'fold', onclick: (e) => { e.stopPropagation(); l.open = !l.open; this.refresh(); doc.metaDirty = true; } }, l.open ? '▾' : '▸'));
-      r.append(el('span', { class: 'ficon' }, '📁'));
+      r.append(el('span', { class: 'ficon' + (l.frame ? ' frame' : '') }, l.frame ? '▭' : '📁'));
     } else if (l.kind === 'paper') {
       const sw = el('button', { class: 'paper-sw', style: `background:${l.color}`, title: '用紙の色をメインカラーにする', onclick: (e) => {
         e.stopPropagation();
@@ -260,6 +261,7 @@ class LayerPanel {
       const wrap = el('div', { class: 'thumb-wrap' }, th);
       if (l.kind === 'vector') wrap.append(el('span', { class: 'kind' }, '✒'));
       if (l.kind === 'text') wrap.append(el('span', { class: 'kind' }, 'T'));
+      if (l.kind === 'balloon') wrap.append(el('span', { class: 'kind' }, '💬'));
       wrap.addEventListener('click', (e) => { if (l.mask && doc.activeId === l.id && doc.maskEdit) { e.stopPropagation(); doc.maskEdit = false; this.app.onActiveChanged(); } });
       r.append(wrap);
     }
@@ -280,6 +282,9 @@ class LayerPanel {
     if (l.alphaLock) badges.push('▦');
     if (l.ref) badges.push('参');
     if (l.draft) badges.push('下');
+    if (l.tone) badges.push(`トーン${l.tone.lpi}線`);
+    if (l.mono) badges.push('モノクロ');
+    if (l.frame) badges.push('コマ枠');
     const info = l.kind === 'paper' ? '' : `${Math.round(l.opacity * 100)}% ${BLEND_MODES.find((m) => m.key === l.blend).label}`;
     r.append(el('div', { class: 'lname' }, el('span', { class: 'nm' }, l.name), el('span', { class: 'sub' }, badges.join(' ') + (badges.length ? '  ' : '') + info)));
     let lastTap = 0;

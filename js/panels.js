@@ -2,6 +2,10 @@
 /* 左のツールバー・サブツールと設定（ツールプロパティ）・画面左端のサイズ／不透明度スライダー */
 
 const ICONS = {
+  frame: '<rect x="3" y="4" width="18" height="16"/><path d="M3 11h9M12 4v16"/>',
+  balloon: '<path d="M12 4c5 0 9 3 9 7s-4 7-9 7c-1 0-2 0-3-.3L5 20l1-3.5C4 15 3 13 3 11c0-4 4-7 9-7z"/>',
+  fx: '<path d="M12 12L3 3M12 12l9-9M12 12L3 21M12 12l9 9M12 12H2M12 12h10M12 12V2M12 12v10" stroke-width="1.1"/><circle cx="12" cy="12" r="3" fill="var(--bg2)"/>',
+  ruler: '<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>',
   select: '<rect x="4" y="5" width="16" height="14" stroke-dasharray="3 2.5"/>',
   vecedit: '<path d="M4 20c4-1 6-5 8-8s4-6 8-7"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/><path d="M15 17l4-4M17 19l4-4"/>',
   gradient: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14M12 5v14M16 5v14" stroke-opacity=".35"/>',
@@ -57,6 +61,10 @@ class ToolPanels {
     else if (t === 'gradient') this.gradProps(P);
     else if (t === 'text') this.textProps(P);
     else if (t === 'vecedit') this.vecProps(P);
+    else if (t === 'frame') this.frameProps(P);
+    else if (t === 'fx') this.fxProps(P);
+    else if (t === 'balloon') this.balloonProps(P);
+    else if (t === 'ruler') this.rulerProps(P);
     else if (t === 'move') P.append(el('p', { class: 'hint' }, '作業中のレイヤー（フォルダーなら中身すべて）をドラッグで動かします。Shift で縦横だけ。拡大・回転は ⌘T（編集 → 変形）。'));
     else if (t === 'hand') P.append(el('p', { class: 'hint' }, 'ドラッグで画面を動かします。2本指でつまむと拡大縮小・回転できます。'));
     else if (t === 'zoom') P.append(el('p', { class: 'hint' }, 'タップで拡大、Alt を押しながらで縮小。'));
@@ -160,6 +168,47 @@ class ToolPanels {
     P.append(this.slider('範囲', o.size, { min: 4, max: 400, log: true, unit: 'px', fmt: (v) => Math.round(v) }, (v) => set('size', v)));
     P.append(this.slider('変える量', o.amount, { min: 5, max: 100, unit: '%' }, (v) => set('amount', Math.round(v))));
     P.append(el('p', { class: 'hint' }, 'ベクターレイヤーの線をなぞると、触れた線の太さが変わります（1回のなぞりで1本につき1回）。'));
+  }
+
+  frameProps(P) {
+    const app = this.app, o = app.frameOpts, set = (k, v) => app.updateOpts('frame', { [k]: v });
+    this.subList(P, FRAME_SUBTOOLS, o.sub, (id) => { set('sub', id); this.refreshProps(); });
+    if (o.sub === 'split') {
+      P.append(this.slider('左右の間隔', o.gapH, { min: 0, max: 20, step: 0.5, unit: 'mm' }, (v) => set('gapH', v)));
+      P.append(this.slider('上下の間隔', o.gapV, { min: 0, max: 30, step: 0.5, unit: 'mm' }, (v) => set('gapV', v)));
+    }
+    if (o.sub === 'rect') P.append(this.slider('枠線の太さ', o.width, { min: 0, max: 5, step: 0.1, unit: 'mm' }, (v) => set('width', v)));
+    P.append(el('button', { class: 'btn small', onclick: () => FrameOps.createDialog(app) }, '基本枠からコマ枠を作る…'));
+    P.append(el('p', { class: 'hint' }, { split: 'コマ枠を横切るように線を引くと2つに割れます（縦横は吸い付きます）。横に割ると上下の間隔、縦に割ると左右の間隔が空きます。',
+      rect: 'ドラッグで長方形のコマ枠フォルダーを作ります。', edit: 'コマの角（四角い印）をドラッグして形を変えます。' }[o.sub]));
+  }
+  fxProps(P) {
+    const app = this.app, o = app.fxOpts, set = (k, v) => app.updateOpts('fx', { [k]: v });
+    this.subList(P, FX_SUBTOOLS, o.sub, (id) => { set('sub', id); this.refreshProps(); });
+    P.append(this.slider('本数', o.count, { min: 4, max: 600, log: true, fmt: (v) => Math.round(v) }, (v) => set('count', Math.round(v))));
+    P.append(this.slider('線の太さ', o.width, { min: 0.5, max: 60, log: true, unit: 'px', fmt: (v) => (v < 10 ? v.toFixed(1) : Math.round(v)) }, (v) => set('width', v)));
+    P.append(this.slider('間隔のばらつき', o.jitter, { min: 0, max: 100, unit: '%' }, (v) => set('jitter', v)));
+    P.append(this.slider('長さのばらつき', o.lenVar, { min: 0, max: 100, unit: '%' }, (v) => set('lenVar', v)));
+    if (o.sub !== 'flow') P.append(this.slider('まとまり', o.bundle, { min: 0, max: 80 }, (v) => set('bundle', Math.round(v))));
+    P.append(el('p', { class: 'hint' }, o.sub === 'flow' ? 'ドラッグした向き・長さで流線を引きます（選択範囲があればその中）。' : 'ドラッグで内側の楕円（線が届かない所）を決めます。新しいレイヤーに描きます。描くたびに並びが変わります。'));
+  }
+  balloonProps(P) {
+    const app = this.app, o = app.balloonOpts, set = (k, v) => app.updateOpts('balloon', { [k]: v });
+    this.subList(P, BALLOON_SUBTOOLS, o.sub, (id) => { set('sub', id); this.refreshProps(); });
+    P.append(this.slider('線の太さ', o.line, { min: 0, max: 40, step: 0.5, unit: 'px' }, (v) => set('line', v)));
+    P.append(this.toggle('中を白く塗る', o.fillWhite, (v) => set('fillWhite', v)));
+    P.append(el('button', { class: 'btn small', onclick: () => app.tools.balloon.removeSelected() }, '選んだフキダシを消す'));
+    P.append(el('p', { class: 'hint' }, o.sub === 'tail' ? 'フキダシの中から外へドラッグすると、しっぽが付きます。' : o.sub === 'edit' ? 'フキダシを押して選び、ドラッグで動かします。' : 'ドラッグでフキダシを描きます（線の色 = メインカラー）。文字はテキストツールで重ねます。'));
+  }
+  rulerProps(P) {
+    const app = this.app, o = app.rulerOpts, set = (k, v) => app.updateOpts('ruler', { [k]: v });
+    this.subList(P, RULER_SUBTOOLS, o.sub, (id) => { set('sub', id); this.refreshProps(); });
+    if (o.sub === 'symmetry') {
+      P.append(this.slider('線の数', o.count, { min: 1, max: 12 }, (v) => { set('count', Math.round(v)); const r = app.doc && app.doc.ruler; if (r && r.type === 'symmetry') { r.count = Math.round(v); app.view.request(); } }));
+      P.append(this.toggle('鏡写し', o.mirror, (v) => { set('mirror', v); const r = app.doc && app.doc.ruler; if (r && r.type === 'symmetry') { r.mirror = v; app.view.request(); } }));
+    }
+    P.append(el('p', { class: 'hint' }, RULER_SUBTOOLS.find((s) => s.id === o.sub).hint + ' 定規の点はドラッグで動かせます。吸い付きは画面上の「定規」ボタンで切り替えます。'));
+    P.append(el('button', { class: 'btn small', onclick: () => { if (app.doc) { app.doc.ruler = null; app.doc.metaDirty = true; app.scheduleSave(); app.onViewFlags(); app.view.request(); } } }, '定規を消す'));
   }
 
   /* ---- 部品 */
