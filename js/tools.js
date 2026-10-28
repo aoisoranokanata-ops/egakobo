@@ -4,12 +4,17 @@
 
 /* 道具の一覧（左のツールバーの順）。subtools があるものはサブツールを選べる */
 const TOOL_DEFS = [
+  { id: 'select', name: '選択範囲', key: 'm', icon: 'select' },
   { id: 'pen', name: 'ペン', key: 'p', icon: 'pen' },
   { id: 'pencil', name: '鉛筆', key: 'n', icon: 'pencil' },
   { id: 'brush', name: '筆', key: 'b', icon: 'brush' },
   { id: 'airbrush', name: 'エアブラシ', key: 'a', icon: 'air' },
   { id: 'eraser', name: '消しゴム', key: 'e', icon: 'eraser' },
+  { id: 'vecedit', name: '線修正', key: 'q', icon: 'vecedit' },
   { id: 'fill', name: '塗りつぶし', key: 'g', icon: 'bucket' },
+  { id: 'gradient', name: 'グラデーション', key: 'j', icon: 'gradient' },
+  { id: 'shape', name: '図形', key: 'u', icon: 'shape' },
+  { id: 'text', name: 'テキスト', key: 't', icon: 'text' },
   { id: 'eyedropper', name: 'スポイト', key: 'i', icon: 'dropper' },
   { id: 'move', name: 'レイヤー移動', key: 'v', icon: 'move' },
   { id: 'hand', name: '手のひら', key: 'h', icon: 'hand' },
@@ -30,7 +35,7 @@ class BrushTool {
   down(p) {
     const app = this.app, layer = app.doc.active;
     const b = app.brush;
-    this.stroke = new BrushStroke(app.doc, layer, b, app.color.main, { gamma: app.pressureGamma(), transparent: app.color.transparent && !b.erase });
+    this.stroke = new BrushStroke(app.doc, layer, b, app.color.main, { gamma: app.pressureGamma(), transparent: app.color.transparent && !b.erase, target: app.doc.maskEdit ? 'mask' : 'tiles' });
     // Shift: 前のストロークの終わりから直線
     if (p.shift && this.lastEnd && this.lastEnd.layer === layer) {
       const a = this.lastEnd;
@@ -59,6 +64,7 @@ class FillTool {
     const run = () => {
       const ok = Fill.run(app.doc, app.doc.active, p.x, p.y, {
         ...o, color: app.color.main, erase: o.erase || app.color.transparent, alphaLock: app.doc.active.alphaLock, tolerance: Math.round((o.tolerance / 100) * 255),
+        target: app.doc.maskEdit ? 'mask' : 'tiles',
       });
       if (!ok) toast('塗れる所がありませんでした');
       app.afterEdit();
@@ -78,7 +84,7 @@ class FillTool {
     if (!pts || pts.length < 3) { this.app.view.request(); return; }
     const app = this.app, doc = app.doc, o = this.opts;
     const erase = o.erase || app.color.transparent;
-    doc.beginStroke(doc.active, { erase, opacity: o.opacity });
+    doc.beginStroke(doc.active, { erase, opacity: o.opacity, target: doc.maskEdit ? 'mask' : 'tiles' });
     const xs = pts.map((q) => q.x), ys = pts.map((q) => q.y);
     const { tx0, ty0, tx1, ty1 } = tilesOfRect({ x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs) + 1, h: Math.max(...ys) - Math.min(...ys) + 1 });
     for (let ty = Math.max(0, ty0); ty <= Math.min(doc.rows - 1, ty1); ty++) for (let tx = Math.max(0, tx0); tx <= Math.min(doc.cols - 1, tx1); tx++) {
@@ -115,8 +121,8 @@ class MoveTool {
   targets() {
     const a = this.app.doc.active;
     if (!a) return [];
-    if (a.isRaster) return [a];
-    if (a.isFolder) return [...this.app.doc.walk(a.children)].filter((l) => l.isRaster && !l.locked);
+    if (a.hasTiles) return [a];
+    if (a.isFolder) return [...this.app.doc.walk(a.children)].filter((l) => l.hasTiles && !l.locked);
     return [];
   }
   down(p) {
@@ -140,7 +146,16 @@ class MoveTool {
     for (const l of st.ts) l.offset = null;
     if (off.dx || off.dy) {
       doc.history.begin();
-      for (const l of st.ts) moveLayerPixels(doc, l, off.dx, off.dy);
+      for (const l of st.ts) {
+        if (l.kind === 'text') {
+          const before = l.text;
+          l.text = { ...before, x: before.x + off.dx, y: before.y + off.dy };
+          renderText(doc, l);
+          doc.history.push(new SwapCmd('テキストの移動', l, 'text', before, l.text, rerenderTextCmd));
+        } else if (l.kind === 'vector') transformVectorLayer(doc, l, (x, y) => ({ x: x + off.dx, y: y + off.dy }), null);
+        else moveLayerPixels(doc, l, off.dx, off.dy);
+        if (l.mask && l.mask.size) moveLayerPixels(doc, l, off.dx, off.dy, 'mask');
+      }
       doc.history.end('レイヤー移動');
     }
     doc.invalidateAll();
@@ -150,8 +165,8 @@ class MoveTool {
 }
 
 /* レイヤーの画素を整数 px ずらす（タイルを作り直し、古いタイルは履歴が持つ） */
-function moveLayerPixels(doc, layer, dx, dy) {
-  const old = layer.tiles, nt = new Map();
+function moveLayerPixels(doc, layer, dx, dy, prop = 'tiles') {
+  const old = layer[prop], nt = new Map();
   for (const [k, c] of old) {
     const [tx, ty] = parseKey(k);
     const X = tx * TILE + dx, Y = ty * TILE + dy;
@@ -169,9 +184,9 @@ function moveLayerPixels(doc, layer, dx, dy) {
   for (const k of new Set([...old.keys(), ...nt.keys()])) before.set(k, old.get(k) || null);
   old.clear();
   for (const [k, t] of nt) old.set(k, t);
-  for (const k of before.keys()) { doc.invalidateKey(k); doc.markTile(layer, k); }
+  for (const k of before.keys()) { doc.invalidateKey(k); doc.markTile(layer, k, prop === 'mask'); }
   layer.ver++;
-  doc.history.push(new PixelCmd('レイヤー移動', layer, before));
+  doc.history.push(new PixelCmd('レイヤー移動', layer, before, prop));
   doc.changed();
 }
 

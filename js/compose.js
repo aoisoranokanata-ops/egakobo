@@ -88,12 +88,13 @@ function included(l, o) {
   if (!l.visible) return false;
   if (o.exportMode && l.draft) return false;
   if (l.kind === 'paper') return o.paper;
-  if (o.filter && l.kind === 'raster' && !o.filter(l)) return false;
+  if (o.filter && l.kind !== 'folder' && !o.filter(l)) return false;
   return true;
 }
 
 function renderList(doc, list, target, tx, ty, d, o) {
   const T = tempsAt(d);
+  const key = tkey(tx, ty);
   for (let i = 0; i < list.length;) {
     const L = list[i];
     let j = i + 1;
@@ -107,13 +108,18 @@ function renderList(doc, list, target, tx, ty, d, o) {
       target.fillRect(0, 0, Math.min(TILE, doc.width - tx * TILE), Math.min(TILE, doc.height - ty * TILE));
       continue;
     }
+    if (L.kind === 'adjust') {                 // 色調補正レイヤー: ここまでの結果を補正する
+      applyAdjustLayer(target.canvas, L, key, o);
+      continue;
+    }
     let src = null;
     if (L.kind === 'folder') {
       const anyClip = clips.some((c) => included(c, o));
-      if (L.blend === 'passthrough' && L.opacity === 1 && !anyClip) { renderList(doc, L.children, target, tx, ty, d + 1, o); continue; }
+      const hasMask = L.mask && L.maskOn && (L.mask.size || (o.preview && doc.stroke && doc.stroke.layer === L));
+      if (L.blend === 'passthrough' && L.opacity === 1 && !anyClip && !hasMask) { renderList(doc, L.children, target, tx, ty, d + 1, o); continue; }
       const fg = clearTemp(T.F);
       renderList(doc, L.children, fg, tx, ty, d + 1, o);
-      src = T.F;
+      src = applyMask(doc, L, T.F, key, T.A, o);
     } else {
       src = layerSource(doc, L, tx, ty, T.A, o);
       if (!src) continue;
@@ -123,8 +129,9 @@ function renderList(doc, list, target, tx, ty, d, o) {
       const bg = clearTemp(T.B);
       bg.drawImage(src, 0, 0);
       for (const c of vis) {
+        if (c.kind === 'adjust') { applyAdjustLayer(T.B, c, key, o); continue; }
         let cs;
-        if (c.kind === 'folder') { const gg = clearTemp(T.G); renderList(doc, c.children, gg, tx, ty, d + 1, o); cs = T.G; }
+        if (c.kind === 'folder') { const gg = clearTemp(T.G); renderList(doc, c.children, gg, tx, ty, d + 1, o); cs = applyMask(doc, c, T.G, key, T.A, o); }
         else cs = layerSource(doc, c, tx, ty, T.A, o);
         if (!cs) continue;
         if (c.blend === 'normal' || c.blend === 'passthrough') {
@@ -150,7 +157,7 @@ function renderList(doc, list, target, tx, ty, d, o) {
   }
 }
 
-/* レイヤーの画素（作業中のストローク・移動のずれを含めた見た目）。無ければ null */
+/* レイヤーの画素（作業中のストローク・移動のずれ・変形中の切り抜き・試し表示・マスクを含めた見た目）。無ければ null */
 function layerSource(doc, L, tx, ty, tmp, o) {
   const k = tkey(tx, ty);
   const s = o.preview ? doc.stroke : null;
@@ -167,17 +174,76 @@ function layerSource(doc, L, tx, ty, tmp, o) {
     }
     if (!any) return null;
     base = tmp;
-  } else base = L.tiles.get(k) || null;
-  if (s && s.layer === L) {
+  } else if (o.preview && doc.preview && doc.preview.layer === L && doc.preview.tiles.has(k)) base = doc.preview.tiles.get(k);
+  else base = L.tiles.get(k) || null;
+  // 変形中: 元の場所の画素を隠す
+  if (o.preview && doc.cut && doc.cut.layer === L && base) {
+    if (!doc.cut.sel) return null;
+    const st = doc.cut.sel.tiles.get(k);
+    if (st) {
+      if (base !== tmp) { const g = clearTemp(tmp); g.drawImage(base, 0, 0); }
+      const g = tmp.getContext('2d');
+      g.globalCompositeOperation = 'destination-out'; g.drawImage(st, 0, 0); g.globalCompositeOperation = 'source-over';
+      base = tmp;
+    }
+  }
+  if (s && s.layer === L && s.target === 'tiles') {
     const st = s.tiles.get(k);
     if (st) {
       if (!base && (s.erase || s.alphaLock)) return null;
       if (base !== tmp) { const g = clearTemp(tmp); if (base) g.drawImage(base, 0, 0); }
-      applyStrokeTile(tmp.getContext('2d'), st, s);
-      return tmp;
+      applyStrokeTile(tmp.getContext('2d'), st, s, k);
+      base = tmp;
     }
   }
-  return base;
+  if (!base) return null;
+  return applyMask(doc, L, base, k, tmp, o);
+}
+
+/* マスク（隠す量）で削る。描いている途中のマスクのストロークも重ねて見せる */
+let _maskTmp = null;
+function applyMask(doc, L, src, k, tmp, o) {
+  if (!L.mask || !L.maskOn) return src;
+  let hide = L.mask.get(k) || null;
+  const s = o.preview ? doc.stroke : null;
+  if (s && s.layer === L && s.target === 'mask' && s.tiles.has(k)) {
+    if (!_maskTmp) _maskTmp = newCanvas(TILE, TILE);
+    const mg = clearTemp(_maskTmp);
+    if (hide) mg.drawImage(hide, 0, 0);
+    if (hide || s.erase) { applyStrokeTile(mg, s.tiles.get(k), { ...s, erase: !s.erase, alphaLock: false }, k); hide = _maskTmp; }
+  }
+  if (!hide) return src;
+  if (src !== tmp) { const g = clearTemp(tmp); g.drawImage(src, 0, 0); }
+  const g = tmp.getContext('2d');
+  g.globalCompositeOperation = 'destination-out'; g.drawImage(hide, 0, 0); g.globalCompositeOperation = 'source-over';
+  return tmp;
+}
+
+/* 色調補正レイヤー: target の画素を補正し、不透明度とマスクの分だけ元と混ぜる（CPU） */
+function applyAdjustLayer(target, L, k, o) {
+  if (!L.adj) return;
+  const fn = adjustFn(L.adj);
+  if (!fn) return;
+  const img = readTilePixels(target), d = img.data;
+  const orig = new Uint8ClampedArray(d);
+  fn(d, TILE, TILE);
+  let hide = L.mask && L.maskOn ? L.mask.get(k) : null;
+  const hd = hide ? readTilePixelsB(hide).data : null;
+  const op = L.opacity;
+  for (let i = 0; i < d.length; i += 4) {
+    const w = op * (hd ? 1 - hd[i + 3] / 255 : 1);
+    if (w >= 0.999) continue;
+    d[i] = orig[i] + (d[i] - orig[i]) * w;
+    d[i + 1] = orig[i + 1] + (d[i + 1] - orig[i + 1]) * w;
+    d[i + 2] = orig[i + 2] + (d[i + 2] - orig[i + 2]) * w;
+    d[i + 3] = orig[i + 3];
+  }
+  _readC.getContext('2d', { willReadFrequently: true }).putImageData(img, 0, 0);
+  const g = target.getContext('2d');
+  g.save();
+  g.setTransform(1, 0, 0, 1, 0, 0); g.globalAlpha = 1; g.globalCompositeOperation = 'copy';
+  g.drawImage(_readC, 0, 0);
+  g.restore();
 }
 
 /* 文書の一部を1枚の canvas に（書き出し・サムネイル用）。大きい文書は scale で縮める */

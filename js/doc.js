@@ -1,6 +1,7 @@
 'use strict';
 /* 文書・レイヤー・履歴。
-   レイヤーは 256px タイルの Map（描いていない所はタイル無し＝透明）。木は root.children（下→上）。 */
+   レイヤーは 256px タイルの Map（描いていない所はタイル無し＝透明）。木は root.children（下→上）。
+   マスクは「隠す量」のタイル（白・アルファ。タイル無し＝隠さない）。選択範囲は Selection（selection.js）。 */
 
 const BLEND_MODES = [
   { key: 'normal', label: '通常', op: 'source-over' },
@@ -24,8 +25,9 @@ const BLEND_MODES = [
 ];
 const BLEND_OP = Object.fromEntries(BLEND_MODES.map((m) => [m.key, m.op]));
 
-/* 構造の履歴・保存で写す属性 */
-const LAYER_PROPS = ['name', 'visible', 'opacity', 'blend', 'clip', 'locked', 'alphaLock', 'ref', 'draft', 'open', 'color', 'label'];
+/* 構造の履歴・保存で写す属性（text・adj は差し替えて使う＝中身を書き換えない） */
+const LAYER_PROPS = ['name', 'visible', 'opacity', 'blend', 'clip', 'locked', 'alphaLock', 'ref', 'draft', 'open', 'color', 'label', 'maskOn', 'text', 'adj'];
+const KIND_NAMES = { raster: 'ラスター', vector: 'ベクター', text: 'テキスト', adjust: '色調補正', folder: 'フォルダー', paper: '用紙' };
 
 let _layerSeq = 1;
 function bumpLayerSeq(n) { if (n >= _layerSeq) _layerSeq = n + 1; }
@@ -33,7 +35,7 @@ function bumpLayerSeq(n) { if (n >= _layerSeq) _layerSeq = n + 1; }
 class Layer {
   constructor(kind = 'raster', name = '') {
     this.id = _layerSeq++;
-    this.kind = kind;              // 'raster' | 'folder' | 'paper' | 'root'
+    this.kind = kind;              // 'raster' | 'vector' | 'text' | 'adjust' | 'folder' | 'paper' | 'root'
     this.name = name;
     this.visible = true;
     this.opacity = 1;
@@ -42,21 +44,28 @@ class Layer {
     this.locked = false;
     this.alphaLock = false;
     this.ref = false;              // 参照レイヤー（塗りつぶしの参照先）
-    this.draft = false;            // 下書き（書き出さない）
+    this.draft = false;            // 下描き（書き出さない）
     this.open = true;              // フォルダの開閉
     this.color = '#ffffff';        // 用紙の色
-    this.label = null;             // レイヤーカラー（一覧の色札）
-    this.tiles = kind === 'raster' ? new Map() : null;
+    this.label = null;
+    this.maskOn = true;
+    this.text = null;              // テキストの設定（text.js）
+    this.adj = null;               // 色調補正の設定 {type, params}（adjust.js）
+    this.tiles = kind === 'raster' || kind === 'vector' || kind === 'text' ? new Map() : null;
     this.children = kind === 'folder' || kind === 'root' ? [] : null;
+    this.strokes = kind === 'vector' ? [] : null;   // ベクターの線（vector.js）
+    this.mask = null;              // Map（隠す量）| null
     this.offset = null;            // 移動中の見た目のずれ {dx, dy}
     this.ver = 0;                  // サムネイル更新用
   }
   get isFolder() { return this.kind === 'folder'; }
   get isRaster() { return this.kind === 'raster'; }
+  get hasTiles() { return !!this.tiles; }
   /* 描いてある範囲（タイル単位） */
-  tileBounds() {
+  tileBounds(map = this.tiles) {
+    if (!map) return null;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const k of this.tiles.keys()) { const [tx, ty] = parseKey(k); x0 = Math.min(x0, tx); y0 = Math.min(y0, ty); x1 = Math.max(x1, tx); y1 = Math.max(y1, ty); }
+    for (const k of map.keys()) { const [tx, ty] = parseKey(k); x0 = Math.min(x0, tx); y0 = Math.min(y0, ty); x1 = Math.max(x1, tx); y1 = Math.max(y1, ty); }
     return x0 === Infinity ? null : { x: x0 * TILE, y: y0 * TILE, w: (x1 - x0 + 1) * TILE, h: (y1 - y0 + 1) * TILE };
   }
 }
@@ -73,13 +82,17 @@ class Doc {
     if (paper) p.color = paper; else p.visible = false;
     this.root.children.push(p);
     this.activeId = null;
+    this.maskEdit = false;         // true = 作業レイヤーのマスクに描く
+    this.sel = null;               // Selection | null（全体）
     this.stroke = null;            // 描いている途中のストローク（compose.js が重ねて見せる）
-    this.unsaved = new Set();      // 'layerId/tx,ty'
+    this.cut = null;               // 変形中: {layer, sel} 元の画素を隠す
+    this.preview = null;           // 補正・フィルターの試し表示: {layer, tiles: Map}
+    this.unsaved = new Set();      // 'layerId/tx,ty'（マスクは 'layerId/m:tx,ty'）
     this.metaDirty = true;
     this.cols = Math.ceil(width / TILE); this.rows = Math.ceil(height / TILE);
     this.comp = new Comp(this);
     this.history = new History(this);
-    this.onChange = null;          // app が設定: 構造・画素が変わった時
+    this.onChange = null;
   }
 
   static create(opts) {
@@ -92,8 +105,9 @@ class Doc {
 
   get paper() { return this.root.children.find((l) => l.kind === 'paper'); }
   get active() { return this.find(this.activeId); }
+  get fullRect() { return { x: 0, y: 0, w: this.width, h: this.height }; }
 
-  *walk(list = this.root.children) {          // 下から上へ、フォルダの中も
+  *walk(list = this.root.children) {
     for (const l of list) { yield l; if (l.children) yield* this.walk(l.children); }
   }
   layers() { return [...this.walk()]; }
@@ -105,29 +119,31 @@ class Doc {
     }
     return null;
   }
-  /* 祖先のどれかが非表示・ロックか */
   effectiveVisible(layer) { for (let l = layer; l && l !== this.root; l = this.parentOf(l)) if (!l.visible) return false; return true; }
   effectiveLocked(layer) { for (let l = layer; l && l !== this.root; l = this.parentOf(l)) if (l.locked) return true; return false; }
+  /* 文書の中のタイル番号か */
+  inGrid(tx, ty) { return tx >= 0 && ty >= 0 && tx < this.cols && ty < this.rows; }
+  *gridKeys(r = this.fullRect) {
+    const { tx0, ty0, tx1, ty1 } = tilesOfRect(r);
+    for (let ty = Math.max(0, ty0); ty <= Math.min(this.rows - 1, ty1); ty++)
+      for (let tx = Math.max(0, tx0); tx <= Math.min(this.cols - 1, tx1); tx++) yield [tx, ty, tkey(tx, ty)];
+  }
 
   // ---- 合成キャッシュの無効化
   invalidateKey(key) { const [tx, ty] = parseKey(key); this.comp.invalidate(tx, ty); }
-  invalidateRect(r) {
-    const { tx0, ty0, tx1, ty1 } = tilesOfRect(r);
-    for (let ty = Math.max(0, ty0); ty <= Math.min(this.rows - 1, ty1); ty++)
-      for (let tx = Math.max(0, tx0); tx <= Math.min(this.cols - 1, tx1); tx++) this.comp.invalidate(tx, ty);
-  }
+  invalidateRect(r) { for (const [tx, ty] of this.gridKeys(r)) this.comp.invalidate(tx, ty); }
   invalidateLayer(layer) {
-    if (layer.tiles) { for (const k of layer.tiles.keys()) this.invalidateKey(k); }
-    else if (layer.children) for (const c of layer.children) this.invalidateLayer(c);
+    if (layer.tiles) { for (const k of layer.tiles.keys()) this.invalidateKey(k); if (layer.mask) for (const k of layer.mask.keys()) this.invalidateKey(k); }
     else this.comp.invalidateAll();
   }
   invalidateAll() { this.comp.invalidateAll(); }
-  markTile(layer, key) { this.unsaved.add(layer.id + '/' + key); }
+  markTile(layer, key, mask = false) { this.unsaved.add(layer.id + '/' + (mask ? 'm:' : '') + key); }
   changed(kind = 'pixels') { if (kind !== 'pixels') this.metaDirty = true; if (this.onChange) this.onChange(kind); }
 
-  // ---- ストローク（ブラシ・投げなわ塗り・塗りつぶしが共通で使う）
-  beginStroke(layer, { erase = false, opacity = 1, alphaLock = false, grain = null, color = null } = {}) {
-    this.stroke = { layer, tiles: new Map(), erase, opacity, alphaLock: alphaLock || layer.alphaLock, grain };
+  // ---- ストローク（ブラシ・図形・グラデーション・塗りつぶしが共通で使う）
+  /* target: 'tiles' = 画素、'mask' = マスク（erase=true で隠す、false で見せる） */
+  beginStroke(layer, { erase = false, opacity = 1, alphaLock = false, grain = null, target = 'tiles', useSel = true } = {}) {
+    this.stroke = { layer, tiles: new Map(), erase, opacity, alphaLock: target === 'tiles' && (alphaLock || layer.alphaLock), grain, target, sel: useSel ? this.sel : null };
     return this.stroke;
   }
   strokeTile(tx, ty) {
@@ -142,50 +158,81 @@ class Doc {
     this.stroke.tiles.clear();
   }
   cancelStroke() { this.clearStroke(); this.stroke = null; }
-  /* ストロークをレイヤーに焼き込んで履歴に積む */
+  /* ストロークをレイヤー（またはマスク）に焼き込んで履歴に積む */
   commitStroke(label) {
     const s = this.stroke;
     if (!s) return;
     this.stroke = null;
-    const layer = s.layer, before = new Map();
+    const layer = s.layer, isMask = s.target === 'mask';
+    if (isMask && !layer.mask) layer.mask = new Map();
+    const map = isMask ? layer.mask : layer.tiles;
+    const before = new Map();
     for (const [k, st] of s.tiles) {
-      let cur = layer.tiles.get(k);
-      if (!cur && (s.erase || s.alphaLock)) { TilePool.put(st); continue; }
+      let cur = map.get(k);
+      // 画素: 消す・透明保護で元が無ければ変化なし。マスク: 見せる（隠す量を減らす）で元が無ければ変化なし
+      const noop = isMask ? !s.erase && !cur : !cur && (s.erase || s.alphaLock);
+      if (noop || (s.sel && !s.sel.tiles.has(k))) { TilePool.put(st); continue; }
       before.set(k, cur ? copyTile(cur) : null);
-      if (!cur) { cur = TilePool.get(); layer.tiles.set(k, cur); }
-      applyStrokeTile(ctx2d(cur), st, s);
+      if (!cur) { cur = TilePool.get(); map.set(k, cur); }
+      applyStrokeTile(ctx2d(cur), st, isMask ? { ...s, erase: !s.erase, alphaLock: false } : s, k);
       TilePool.put(st);
       this.invalidateKey(k);
-      this.markTile(layer, k);
+      this.markTile(layer, k, isMask);
     }
-    if (before.size) { layer.ver++; this.history.push(new PixelCmd(label, layer, before)); this.changed(); }
+    if (before.size) { layer.ver++; this.history.push(new PixelCmd(label, layer, before, isMask ? 'mask' : 'tiles')); this.changed(); }
   }
 
-  /* 画素を直接いじる操作（移動・消去・結合など）: fn がタイルを書き換える前に呼ぶ */
-  pixelEdit(label, layer, fn) {
+  /* 画素を直接いじる操作: fn(touch) の中で touch(key) してから書き換える */
+  pixelEdit(label, layer, fn, prop = 'tiles') {
+    const map = layer[prop];
     const before = new Map();
-    const touch = (k) => { if (!before.has(k)) { const c = layer.tiles.get(k); before.set(k, c ? copyTile(c) : null); } };
+    const touch = (k) => { if (!before.has(k)) { const c = map.get(k); before.set(k, c ? copyTile(c) : null); } };
     fn(touch);
-    for (const k of before.keys()) { this.invalidateKey(k); this.markTile(layer, k); }
-    if (before.size) { layer.ver++; this.history.push(new PixelCmd(label, layer, before)); this.changed(); }
+    for (const k of before.keys()) { this.invalidateKey(k); this.markTile(layer, k, prop === 'mask'); }
+    if (before.size) { layer.ver++; this.history.push(new PixelCmd(label, layer, before, prop)); this.changed(); }
+  }
+  /* タイルの Map を丸ごと入れ替える（変形・フィルターの確定）。古いタイルは履歴が持つ */
+  replaceTiles(label, layer, newTiles, keys, prop = 'tiles') {
+    const map = layer[prop];
+    const before = new Map();
+    for (const k of keys) {
+      before.set(k, map.get(k) || null);
+      const n = newTiles.get(k);
+      if (n) map.set(k, n); else map.delete(k);
+      this.invalidateKey(k);
+      this.markTile(layer, k, prop === 'mask');
+    }
+    layer.ver++;
+    this.history.push(new PixelCmd(label, layer, before, prop));
+    this.changed();
+  }
+
+  // ---- 選択範囲
+  setSel(sel, label = '選択範囲') {
+    if (sel && sel.empty) sel = null;
+    if (sel === this.sel) return;
+    this.history.push(new SelCmd(label, this.sel, sel));
+    this.sel = sel;
+    this.changed('sel');
   }
 
   // ---- 構造
   snapshot() {
-    const snap = (node) => ({ layer: node, props: Object.fromEntries(LAYER_PROPS.map((k) => [k, node[k]])), children: node.children ? node.children.map(snap) : null });
+    const snap = (node) => ({ layer: node, props: Object.fromEntries([...LAYER_PROPS, 'kind'].map((k) => [k, node[k]])), mask: node.mask, strokes: node.strokes, children: node.children ? node.children.map(snap) : null });
     return { tree: snap(this.root), activeId: this.activeId };
   }
   restore(s) {
     const apply = (n) => {
       Object.assign(n.layer, n.props);
+      n.layer.mask = n.mask;
+      n.layer.strokes = n.strokes;
       if (n.children) n.layer.children = n.children.map((c) => { apply(c); return c.layer; });
     };
     apply(s.tree);
     this.activeId = s.activeId;
     this.invalidateAll();
-    this.metaDirty = true;           // 戻ってきたレイヤーのタイルは Store が「未保存のレイヤー」として書き直す
+    this.metaDirty = true;
   }
-  /* 構造を変える操作: fn の前後を記録して1手にする */
   structEdit(label, fn) {
     const before = this.snapshot();
     const r = fn();
@@ -196,33 +243,43 @@ class Doc {
     this.changed('struct');
     return r;
   }
-  /* 属性の変更（連続するスライダー操作は1手にまとめる） */
   setProps(layer, props, label = 'レイヤーの設定', mergeKey = null) {
     const before = this.snapshot();
     Object.assign(layer, props);
     const after = this.snapshot();
     this.history.push(new StructCmd(label, before, after), mergeKey ? mergeKey + layer.id : null);
     this.invalidateLayer(layer);
-    if ('clip' in props || 'visible' in props || 'blend' in props) this.invalidateAll();
+    if ('clip' in props || 'visible' in props || 'blend' in props || 'adj' in props || layer.kind === 'adjust') this.invalidateAll();
     this.changed('struct');
+  }
+  /* 履歴に残さず属性を変える（開いている設定画面の途中の値。確定時に呼ぶ側が1手にする） */
+  setPropsQuiet(layer, props) {
+    Object.assign(layer, props);
+    if (layer.kind === 'adjust' || 'visible' in props || 'clip' in props) this.invalidateAll(); else this.invalidateLayer(layer);
+    if (this.onChange) this.onChange('quiet');
   }
 }
 
-/* ストロークのタイルを、レイヤーのタイルに重ねる（合成の見た目と確定で同じ処理） */
+/* ストロークのタイルを、レイヤーのタイルに重ねる（合成の見た目と確定で同じ処理）。
+   紙の質感・選択範囲で削ってから、不透明度付きで重ねる */
 let _grainTmp = null;
-function applyStrokeTile(g, st, s) {
+function applyStrokeTile(g, st, s, key) {
   let src = st;
-  if (s.grain) {
+  const selTile = s.sel ? s.sel.tiles.get(key) : null;
+  if (s.sel && !selTile) return;
+  if (s.grain || selTile) {
     if (!_grainTmp) _grainTmp = newCanvas(TILE, TILE);
     const t = _grainTmp.getContext('2d');
+    t.setTransform(1, 0, 0, 1, 0, 0);
     t.globalCompositeOperation = 'copy'; t.globalAlpha = 1;
     t.drawImage(st, 0, 0);
-    t.globalCompositeOperation = 'destination-out';
-    t.drawImage(s.grain, 0, 0);            // 質感は 256px 周期＝タイルと同じなので位置合わせ不要
+    if (s.grain) { t.globalCompositeOperation = 'destination-out'; t.drawImage(s.grain, 0, 0); }   // 質感は 256px 周期＝タイルと同じ
+    if (selTile) { t.globalCompositeOperation = 'destination-in'; t.drawImage(selTile, 0, 0); }
     t.globalCompositeOperation = 'source-over';
     src = _grainTmp;
   }
   g.save();
+  g.setTransform(1, 0, 0, 1, 0, 0);
   g.globalAlpha = s.opacity;
   g.globalCompositeOperation = s.erase ? 'destination-out' : s.alphaLock ? 'source-atop' : 'source-over';
   g.drawImage(src, 0, 0);
@@ -231,16 +288,18 @@ function applyStrokeTile(g, st, s) {
 
 /* ---- 履歴 */
 class PixelCmd {
-  constructor(label, layer, tiles) { this.label = label; this.layer = layer; this.tiles = tiles; }
+  constructor(label, layer, tiles, prop = 'tiles') { this.label = label; this.layer = layer; this.tiles = tiles; this.prop = prop; }
   get bytes() { return this.tiles.size * TILE * TILE * 4; }
   swap(doc) {
     const L = this.layer;
+    if (!L[this.prop]) L[this.prop] = new Map();
+    const map = L[this.prop];
     for (const [k, stored] of this.tiles) {
-      const cur = L.tiles.get(k) || null;
-      if (stored) L.tiles.set(k, stored); else L.tiles.delete(k);
+      const cur = map.get(k) || null;
+      if (stored) map.set(k, stored); else map.delete(k);
       this.tiles.set(k, cur);
       doc.invalidateKey(k);
-      doc.markTile(L, k);
+      doc.markTile(L, k, this.prop === 'mask');
     }
     L.ver++;
   }
@@ -253,6 +312,21 @@ class StructCmd {
   get bytes() { return 2000; }
   undo(doc) { doc.restore(this.before); }
   redo(doc) { doc.restore(this.after); }
+  dispose() {}
+}
+class SelCmd {
+  constructor(label, before, after) { this.label = label; this.before = before; this.after = after; }
+  get bytes() { return ((this.before ? this.before.tiles.size : 0) + (this.after ? this.after.tiles.size : 0)) * TILE * TILE * 2; }
+  undo(doc) { doc.sel = this.before; }
+  redo(doc) { doc.sel = this.after; }
+  dispose() {}
+}
+/* 値を差し替えて、描き直しを呼ぶ汎用の1手（テキスト・ベクター） */
+class SwapCmd {
+  constructor(label, layer, key, before, after, rerender) { Object.assign(this, { label, layer, key, before, after, rerender }); }
+  get bytes() { return 4000; }
+  undo(doc) { this.layer[this.key] = this.before; this.rerender(doc, this.layer, this.after, this.before); }
+  redo(doc) { this.layer[this.key] = this.after; this.rerender(doc, this.layer, this.before, this.after); }
   dispose() {}
 }
 class MultiCmd {
@@ -268,15 +342,15 @@ class History {
     this.doc = doc;
     this.undoStack = []; this.redoStack = [];
     this.maxSteps = 120;
-    this.maxBytes = 320 * 1024 * 1024;   // タイルの写しの合計の目安
-    this.group = null;                   // まとめ中（begin〜end を1手に）
+    this.maxBytes = 320 * 1024 * 1024;
+    this.group = null;
+    this.depth = 0;
     this.lastMerge = null;
   }
   push(cmd, mergeKey = null) {
     if (this.group) { this.group.push(cmd); return; }
     for (const c of this.redoStack) c.dispose();
     this.redoStack = [];
-    // 同じ属性を続けて変えた時（スライダー）は1手に
     const top = this.undoStack[this.undoStack.length - 1];
     if (mergeKey && this.lastMerge === mergeKey && top instanceof StructCmd && cmd instanceof StructCmd && performance.now() - this.lastT < 1500) {
       top.after = cmd.after;
@@ -289,8 +363,10 @@ class History {
     this.trim();
     this.notify();
   }
-  begin() { this.group = []; }
+  /* begin〜end を1手に（入れ子にしてよい） */
+  begin() { if (this.depth++ === 0) this.group = []; }
   end(label) {
+    if (--this.depth > 0) return;
     const g = this.group;
     this.group = null;
     if (g && g.length) this.push(g.length === 1 ? g[0] : new MultiCmd(label, g));

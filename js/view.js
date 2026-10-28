@@ -20,6 +20,7 @@ class View {
     this.spaceDown = false;
     this.gesture = null;
     this.fitted = true;
+    this.ants = 0;
 
     new ResizeObserver(() => this.resize()).observe(canvas);
     canvas.addEventListener('pointerdown', (e) => this.onDown(e));
@@ -173,6 +174,19 @@ class View {
     g.setTransform(dpr, 0, 0, dpr, 0, 0);
     g.beginPath(); corners.forEach((p, i) => (i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y))); g.closePath();
     g.lineWidth = 1; g.strokeStyle = 'rgba(0,0,0,.55)'; g.stroke();
+    // 選択範囲の点線（文書座標の線分を画面へ）
+    if (d.sel && !this.app.transforming) {
+      const segs = d.sel.outline();
+      g.beginPath();
+      for (let i = 0; i < segs.length; i += 4) {
+        const a = this.toScreen(segs[i], segs[i + 1]), b = this.toScreen(segs[i + 2], segs[i + 3]);
+        g.moveTo(a.x, a.y); g.lineTo(b.x, b.y);
+      }
+      g.lineWidth = 1; g.setLineDash([4, 4]);
+      g.strokeStyle = '#000'; g.lineDashOffset = -this.ants; g.stroke();
+      g.strokeStyle = '#fff'; g.lineDashOffset = -this.ants + 4; g.stroke();
+      g.setLineDash([]); g.lineDashOffset = 0;
+    }
     // ツールの補助表示（画面座標）
     const tool = this.app.tool;
     if (tool && tool.drawOverlay) tool.drawOverlay(g, this);

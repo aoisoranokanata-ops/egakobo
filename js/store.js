@@ -7,7 +7,7 @@
    変わったタイルだけ書く（doc.unsaved）。どのレイヤーが保存済みかは doc._storedIds で持つ。 */
 
 const FORMAT = 'egakobo';
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;          // 2: ベクター・テキスト・色調補正レイヤー・マスク
 
 const Store = {
   db: null,
@@ -65,25 +65,29 @@ const Store = {
     if (!doc.workId) doc.workId = this.newId();
     const id = doc.workId;
     if (!doc._storedIds) doc._storedIds = new Set();
-    const live = doc.layers().filter((l) => l.isRaster);
+    const live = doc.layers().filter(storedLayer);
     const liveIds = new Set(live.map((l) => l.id));
-    // 書くタイル
+    // 書くタイル（マスクは 'm:tx,ty'）
     const want = new Set(doc.unsaved);
     doc.unsaved.clear();
-    for (const l of live) if (!doc._storedIds.has(l.id)) for (const k of l.tiles.keys()) want.add(l.id + '/' + k);
+    for (const l of live) if (!doc._storedIds.has(l.id)) {
+      if (l.tiles) for (const k of l.tiles.keys()) want.add(l.id + '/' + k);
+      if (l.mask) for (const k of l.mask.keys()) want.add(l.id + '/m:' + k);
+    }
     const puts = [], dels = [];
     try {
       for (const w of want) {
         const i = w.indexOf('/'), lid = +w.slice(0, i), k = w.slice(i + 1);
         if (!liveIds.has(lid)) continue;
         const l = live.find((x) => x.id === lid);
-        const c = l.tiles.get(k);
+        const isMask = k.startsWith('m:'), map = isMask ? l.mask : l.tiles, kk = isMask ? k.slice(2) : k;
+        const c = map ? map.get(kk) : null;
         const key = `${id}|${lid}|${k}`;
         const png = c ? await tileToPNG(c) : null;
         if (png) puts.push([key, { type: 'image/png', buf: png.buffer }]);
         else {
           dels.push(key);
-          if (c && l.tiles.get(k) === c) { l.tiles.delete(k); TilePool.put(c); }    // 消しゴムで空になったタイルは捨てる
+          if (c && map.get(kk) === c) { map.delete(kk); TilePool.put(c); }    // 消しゴムで空になったタイルは捨てる
         }
       }
     } catch (e) { for (const w of want) doc.unsaved.add(w); throw e; }
@@ -129,7 +133,7 @@ const Store = {
     keys.forEach((k, i) => { const p = k.split('|'); files.set(p[1] + '/' + p[2], vals[i]); });
     const doc = await docFromMeta(data.meta, async (lid, k) => { const v = files.get(lid + '/' + k); return v ? new Blob([v.buf], { type: v.type }) : null; }, work.name);
     doc.workId = id;
-    doc._storedIds = new Set(doc.layers().filter((l) => l.isRaster).map((l) => l.id));
+    doc._storedIds = new Set(doc.layers().filter(storedLayer).map((l) => l.id));
     doc.metaDirty = false;
     return doc;
   },
@@ -147,12 +151,18 @@ const Store = {
   },
 };
 
+/* 画素を保存するレイヤー（タイルかマスクを持つ） */
+function storedLayer(l) { return l.hasTiles || !!l.mask; }
+const egkTileName = (lid, k) => `tiles/${lid}/${k.replace('m:', 'm_').replace(',', '_')}.png`;
+
 /* 文書の構造 → JSON（レイヤーの id もそのまま。読み込んでも同じ id を使う） */
 function docMeta(doc) {
   const ser = (l) => {
     const o = { id: l.id, kind: l.kind };
     for (const k of LAYER_PROPS) o[k] = l[k];
     if (l.tiles) o.tiles = [...l.tiles.keys()];
+    if (l.mask) o.mask = [...l.mask.keys()];
+    if (l.strokes) o.strokes = vecToJSON(l.strokes);
     if (l.children) o.children = l.children.map(ser);
     return o;
   };
@@ -176,7 +186,9 @@ async function docFromMeta(meta, getTile, name) {
     bumpLayerSeq(o.id);
     for (const k of LAYER_PROPS) if (k in o) l[k] = o[k];
     idMap.set(o.id, l.id);
-    if (o.kind === 'raster') for (const k of o.tiles || []) jobs.push([l, o.id, k]);
+    if (l.tiles) for (const k of o.tiles || []) jobs.push([l.tiles, o.id, k, k]);
+    if (o.mask) { l.mask = new Map(); for (const k of o.mask) jobs.push([l.mask, o.id, 'm:' + k, k]); }
+    if (o.kind === 'vector') l.strokes = vecFromJSON(o.strokes);
     if (o.children) l.children = o.children.map(build);
     return l;
   };
@@ -184,19 +196,19 @@ async function docFromMeta(meta, getTile, name) {
   if (!doc.paper) { const p = new Layer('paper', '用紙'); doc.root.children.unshift(p); }
   // タイルを並行して読む（多すぎると iPad で詰まるので 16 本ずつ）
   for (let i = 0; i < jobs.length; i += 16) {
-    await Promise.all(jobs.slice(i, i + 16).map(async ([l, oid, k]) => {
-      const blob = await getTile(oid, k);
+    await Promise.all(jobs.slice(i, i + 16).map(async ([map, oid, sk, k]) => {
+      const blob = await getTile(oid, sk);
       if (!blob) return;
       const bmp = await blobToBitmap(blob);
       const c = TilePool.get();
       ctx2d(c).drawImage(bmp, 0, 0);
       if (bmp.close) bmp.close();
-      l.tiles.set(k, c);
+      map.set(k, c);
     }));
   }
   doc.activeId = idMap.get(meta.active) ?? null;
   if (!doc.active || doc.active.kind === 'paper') {
-    const r = doc.layers().reverse().find((l) => l.isRaster);
+    const r = doc.layers().reverse().find((l) => l.hasTiles);
     if (r) doc.activeId = r.id;
     else { const l = new Layer('raster', 'レイヤー 1'); doc.root.children.push(l); doc.activeId = l.id; }
   }
@@ -210,10 +222,12 @@ async function exportEgk(doc) {
   const meta = docMeta(doc);
   files.push({ name: 'document.json', data: new TextEncoder().encode(JSON.stringify(meta)) });
   for (const l of doc.layers()) {
-    if (!l.isRaster) continue;
-    for (const [k, c] of l.tiles) {
-      const png = await tileToPNG(c);
-      if (png) files.push({ name: `tiles/${l.id}/${k.replace(',', '_')}.png`, data: png });
+    for (const [prefix, map] of [['', l.tiles], ['m:', l.mask]]) {
+      if (!map) continue;
+      for (const [k, c] of map) {
+        const png = await tileToPNG(c);
+        if (png) files.push({ name: egkTileName(l.id, prefix + k), data: png });
+      }
     }
   }
   const thumb = renderRegion(doc, { scale: Math.min(1, 512 / Math.max(doc.width, doc.height)), opts: { exportMode: true, preview: false } });
@@ -226,7 +240,7 @@ async function importEgk(file) {
   if (!j) throw new Error('描工房の作品ファイルではありません');
   const meta = JSON.parse(new TextDecoder().decode(j));
   return docFromMeta(meta, async (lid, k) => {
-    const d = z.get(`tiles/${lid}/${k.replace(',', '_')}.png`);
+    const d = z.get(egkTileName(lid, k));
     return d ? new Blob([d], { type: 'image/png' }) : null;
   }, meta.name || (file.name || '').replace(/\.egk$/i, ''));
 }

@@ -8,10 +8,47 @@
 const Fill = {
   /* opts: { ref: 'layer'|'all'|'ref', tolerance 0..255, gap px, expand px, color, opacity, alphaLock } */
   run(doc, layer, x, y, opts) {
+    const t0 = performance.now();
+    const region = this.region(doc, layer, x, y, opts);
+    if (!region) return false;
+    const W = doc.width, H = doc.height;
+    const N = W * H;
+    // 書き込み
+    const { r, g, b } = hexToRgb(opts.color || '#000000');
+    doc.beginStroke(layer, { erase: !!opts.erase, opacity: opts.opacity ?? 1, alphaLock: opts.alphaLock, target: opts.target || 'tiles' });
+    let count = 0;
+    const tmp = newCanvas(TILE, TILE), tg = tmp.getContext('2d');
+    for (let ty = 0; ty < doc.rows; ty++) for (let tx = 0; tx < doc.cols; tx++) {
+      const bx = tx * TILE, by = ty * TILE, ew = Math.min(TILE, W - bx), eh = Math.min(TILE, H - by);
+      let img = null;
+      for (let j = 0; j < eh; j++) {
+        let o = (by + j) * W + bx;
+        for (let k = 0; k < ew; k++, o++) {
+          if (!region[o]) continue;
+          if (!img) img = tg.createImageData(TILE, TILE);
+          const i = (j * TILE + k) * 4;
+          img.data[i] = r; img.data[i + 1] = g; img.data[i + 2] = b; img.data[i + 3] = 255;
+          count++;
+        }
+      }
+      if (img) {
+        tg.putImageData(img, 0, 0);
+        const sg2 = ctx2d(doc.strokeTile(tx, ty));
+        sg2.drawImage(tmp, 0, 0);
+      }
+    }
+    if (!count) { doc.cancelStroke(); return false; }
+    doc.commitStroke(opts.erase ? '塗りつぶし（消去）' : '塗りつぶし');
+    this.lastMs = performance.now() - t0;
+    return true;
+  },
+
+
+  /* 押した所からつながる領域（0/1 の文書大の配列）。自動選択も使う */
+  region(doc, layer, x, y, opts) {
     x = Math.floor(x); y = Math.floor(y);
     const W = doc.width, H = doc.height;
-    if (x < 0 || y < 0 || x >= W || y >= H) return false;
-    const t0 = performance.now();
+    if (x < 0 || y < 0 || x >= W || y >= H) return null;
     const refLayers = this.refFilter(doc, layer, opts.ref);
     // 押した所の色
     const seed = this.readRef(doc, Math.floor(x / TILE), Math.floor(y / TILE), refLayers);
@@ -21,7 +58,7 @@ const Fill = {
     // 1) 塗れる画素
     const N = W * H;
     const free = new Uint8Array(N);
-    const srcLayers = doc.layers().filter((l) => l.isRaster && l.visible && refLayers(l));
+    const srcLayers = doc.layers().filter((l) => l.hasTiles && l.visible && refLayers(l));
     const emptyFree = sa < 8 || sa <= tol ? 1 : 0;        // 何も描いていないタイル（透明）が塗れるか
     for (let ty = 0; ty < doc.rows; ty++) for (let tx = 0; tx < doc.cols; tx++) {
       const bx = tx * TILE, by = ty * TILE, ew = Math.min(TILE, W - bx), eh = Math.min(TILE, H - by);
@@ -61,40 +98,13 @@ const Fill = {
     const ex = Math.round(opts.expand || 0);
     if (ex > 0) { const dist = distanceTo(region, W, H, 1); for (let i = 0; i < N; i++) if (!region[i] && dist[i] <= ex * 3) region[i] = 1; }
     else if (ex < 0) { const dist = distanceTo(region, W, H, 0); for (let i = 0; i < N; i++) if (region[i] && dist[i] <= -ex * 3) region[i] = 0; }
-    // 書き込み
-    const { r, g, b } = hexToRgb(opts.color || '#000000');
-    doc.beginStroke(layer, { erase: !!opts.erase, opacity: opts.opacity ?? 1, alphaLock: opts.alphaLock });
-    let count = 0;
-    const tmp = newCanvas(TILE, TILE), tg = tmp.getContext('2d');
-    for (let ty = 0; ty < doc.rows; ty++) for (let tx = 0; tx < doc.cols; tx++) {
-      const bx = tx * TILE, by = ty * TILE, ew = Math.min(TILE, W - bx), eh = Math.min(TILE, H - by);
-      let img = null;
-      for (let j = 0; j < eh; j++) {
-        let o = (by + j) * W + bx;
-        for (let k = 0; k < ew; k++, o++) {
-          if (!region[o]) continue;
-          if (!img) img = tg.createImageData(TILE, TILE);
-          const i = (j * TILE + k) * 4;
-          img.data[i] = r; img.data[i + 1] = g; img.data[i + 2] = b; img.data[i + 3] = 255;
-          count++;
-        }
-      }
-      if (img) {
-        tg.putImageData(img, 0, 0);
-        const sg2 = ctx2d(doc.strokeTile(tx, ty));
-        sg2.drawImage(tmp, 0, 0);
-      }
-    }
-    if (!count) { doc.cancelStroke(); return false; }
-    doc.commitStroke(opts.erase ? '塗りつぶし（消去）' : '塗りつぶし');
-    this.lastMs = performance.now() - t0;
-    return true;
+    return region;
   },
 
   refFilter(doc, layer, mode) {
     if (mode === 'layer') return (l) => l === layer;
     if (mode === 'ref') {
-      const refs = doc.layers().filter((l) => l.ref && l.kind === 'raster');
+      const refs = doc.layers().filter((l) => l.ref && l.hasTiles);
       if (refs.length) { const set = new Set(refs); return (l) => set.has(l); }
     }
     return (l) => !l.draft || l === layer;

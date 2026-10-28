@@ -2,6 +2,11 @@
 /* 左のツールバー・サブツールと設定（ツールプロパティ）・画面左端のサイズ／不透明度スライダー */
 
 const ICONS = {
+  select: '<rect x="4" y="5" width="16" height="14" stroke-dasharray="3 2.5"/>',
+  vecedit: '<path d="M4 20c4-1 6-5 8-8s4-6 8-7"/><circle cx="12" cy="12" r="2.2" fill="currentColor"/><path d="M15 17l4-4M17 19l4-4"/>',
+  gradient: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 5v14M12 5v14M16 5v14" stroke-opacity=".35"/>',
+  shape: '<rect x="3.5" y="10" width="9" height="9"/><circle cx="15.5" cy="8.5" r="5"/>',
+  text: '<path d="M5 6V4h14v2M12 4v16M9 20h6"/>',
   pen: '<path d="M4 20l2-6L16 4l4 4-10 10z"/><path d="M14 6l4 4"/>',
   pencil: '<path d="M5 19l1.5-5L17 3.5l3.5 3.5L10 17.5z"/><path d="M5 19l3.5-1.5"/><path d="M15 5.5l3.5 3.5"/>',
   brush: '<path d="M14 4c3-2 6 1 4 4l-7 7-4-4z"/><path d="M7 11c-3 0-4 3-4 6 0 1 0 2-1 3 4 0 8-1 8-5z"/>',
@@ -47,7 +52,12 @@ class ToolPanels {
     else if (t === 'eyedropper') {
       P.append(this.choice('取得する色', [['all', '表示色'], ['layer', '作業中のレイヤー']], app.toolOpts.eyedropper || 'all', (v) => { app.toolOpts.eyedropper = v; app.saveTools(); }));
       P.append(el('p', { class: 'hint' }, '指の長押しでも、どの道具からでもスポイトになります。'));
-    } else if (t === 'move') P.append(el('p', { class: 'hint' }, '作業中のレイヤー（フォルダーなら中身すべて）をドラッグで動かします。Shift で縦横だけ。'));
+    } else if (t === 'select') this.selectProps(P);
+    else if (t === 'shape') this.shapeProps(P);
+    else if (t === 'gradient') this.gradProps(P);
+    else if (t === 'text') this.textProps(P);
+    else if (t === 'vecedit') this.vecProps(P);
+    else if (t === 'move') P.append(el('p', { class: 'hint' }, '作業中のレイヤー（フォルダーなら中身すべて）をドラッグで動かします。Shift で縦横だけ。拡大・回転は ⌘T（編集 → 変形）。'));
     else if (t === 'hand') P.append(el('p', { class: 'hint' }, 'ドラッグで画面を動かします。2本指でつまむと拡大縮小・回転できます。'));
     else if (t === 'zoom') P.append(el('p', { class: 'hint' }, 'タップで拡大、Alt を押しながらで縮小。'));
   }
@@ -64,6 +74,9 @@ class ToolPanels {
     P.append(this.slider('不透明度', b.opacity * 100, { min: 1, max: 100, unit: '%' }, (v) => set('opacity', v / 100)));
     P.append(this.slider('ブラシ濃度', b.density * 100, { min: 1, max: 100, unit: '%' }, (v) => set('density', v / 100)));
     P.append(this.slider('手ブレ補正', b.stab, { min: 0, max: 50 }, (v) => set('stab', v)));
+    if (t === 'eraser') P.append(this.choice('ベクターレイヤーでは', [['touch', '触れた部分'], ['intersect', '交点まで'], ['whole', '線全体']], b.vectorMode || 'touch', (v) => set('vectorMode', v)));
+    const L = app.doc && app.doc.active;
+    if (L && app.doc.maskEdit) P.append(el('p', { class: 'hint warn' }, 'いまはマスクに描いています（描く＝見せる、消しゴム・透明色＝隠す）。レイヤーの絵に戻るには、レイヤーパネルで絵のサムネイルを押します。'));
     const det = el('details', { class: 'pp-more', open: loadLS('ppMore', false) || null });
     det.addEventListener('toggle', () => saveLS('ppMore', det.open));
     det.append(el('summary', {}, '詳しい設定'));
@@ -99,6 +112,54 @@ class ToolPanels {
     }
     P.append(this.slider('不透明度', o.opacity * 100, { min: 1, max: 100, unit: '%' }, (v) => set('opacity', v / 100)));
     P.append(el('p', { class: 'hint' }, o.mode === 'flood' ? '「他レイヤーを参照」は線画のレイヤーと別のレイヤーに色を塗るときに使います。隙間閉じで線の切れ目を越えません。' : 'ペンで囲んだ所を塗ります（消します）。'));
+  }
+
+  selectProps(P) {
+    const app = this.app, o = app.selOpts, set = (k, v) => app.updateOpts('sel', { [k]: v });
+    this.subList(P, SELECT_SUBTOOLS, o.sub, (id) => { set('sub', id); this.refreshProps(); });
+    P.append(this.choice('選び方', [['new', '新規'], ['add', '追加'], ['sub', '削除'], ['and', '共通']], o.mode, (v) => set('mode', v)));
+    if (o.sub === 'rect' || o.sub === 'ellipse') P.append(this.toggle('正方形・正円', o.square, (v) => set('square', v)));
+    if (o.sub === 'wand') {
+      P.append(this.choice('参照', [['layer', '編集レイヤー'], ['all', '他レイヤー'], ['ref', '参照レイヤー']], o.ref, (v) => set('ref', v)));
+      P.append(this.slider('色の誤差', o.tolerance, { min: 0, max: 100, unit: '%' }, (v) => set('tolerance', v)));
+      P.append(this.slider('隙間閉じ', o.gap, { min: 0, max: 20, unit: 'px' }, (v) => set('gap', Math.round(v))));
+    }
+    if (o.sub === 'selpen' || o.sub === 'selerase') P.append(this.slider('ブラシサイズ', o.size, { min: 1, max: 800, log: true, unit: 'px', fmt: (v) => Math.round(v) }, (v) => set('size', v)));
+    P.append(el('p', { class: 'hint' }, o.sub === 'poly' ? '押した所を順につなぎます。最初の点を押すか Enter で閉じます。' : 'Shift で追加、Alt で削除。選択中は画面の下に操作バーが出ます。'));
+  }
+  shapeProps(P) {
+    const app = this.app, o = app.shapeOpts, set = (k, v) => app.updateOpts('shape', { [k]: v });
+    this.subList(P, SHAPE_SUBTOOLS, o.sub, (id) => { set('sub', id); this.refreshProps(); });
+    if (o.sub !== 'line') P.append(this.choice('描き方', [['stroke', '線'], ['fill', '塗り'], ['both', '線（サブ）と塗り']], o.fill, (v) => set('fill', v)));
+    P.append(this.slider('線の太さ', o.width, { min: 0.5, max: 300, log: true, unit: 'px', fmt: (v) => (v < 10 ? v.toFixed(1) : Math.round(v)) }, (v) => set('width', v)));
+    if (o.sub === 'rect') P.append(this.slider('角の丸み', o.corner, { min: 0, max: 300, unit: 'px' }, (v) => set('corner', Math.round(v))));
+    if (o.sub === 'polygon') P.append(this.slider('角の数', o.sides, { min: 3, max: 24 }, (v) => set('sides', Math.round(v))));
+    P.append(this.toggle(o.sub === 'line' ? '45° ごとに' : '正方形・正円', o.square, (v) => set('square', v)));
+    if (o.sub === 'polygon') P.append(el('p', { class: 'hint' }, '押した所が中心、離した所が角になります。'));
+  }
+  gradProps(P) {
+    const app = this.app, o = app.gradOpts, set = (k, v) => app.updateOpts('grad', { [k]: v });
+    this.subList(P, GRAD_SUBTOOLS, o.sub, (id) => { set('sub', id); this.refreshProps(); });
+    P.append(this.slider('不透明度', o.opacity * 100, { min: 1, max: 100, unit: '%' }, (v) => set('opacity', v / 100)));
+    P.append(this.toggle('色を逆に', o.reverse, (v) => set('reverse', v)));
+    P.append(el('p', { class: 'hint' }, 'ドラッグした向きにかかります。選択範囲があればその中だけ。Shift で 45° ごと。'));
+  }
+  textProps(P) {
+    const app = this.app, o = { ...TEXT_DEFAULTS, ...(app.toolOpts.text || {}) };
+    const set = (k, v) => { app.toolOpts.text = { ...o, [k]: v }; o[k] = v; app.saveTools(); };
+    const fs = el('select', { class: 'sel' }, ...FONT_LABELS.map(([v, t]) => el('option', { value: v, selected: o.font === v || null }, t)));
+    fs.addEventListener('change', () => set('font', fs.value));
+    P.append(el('div', { class: 'pp col' }, el('span', { class: 'pl' }, '書体（新しいテキスト）'), fs));
+    P.append(this.choice('向き', [[true, '縦書き'], [false, '横書き']], o.vertical, (v) => set('vertical', v)));
+    P.append(this.slider('大きさ', o.size, { min: 6, max: 600, log: true, unit: 'px', fmt: (v) => Math.round(v) }, (v) => set('size', Math.round(v))));
+    P.append(el('p', { class: 'hint' }, '絵を押すと文字を打てます。文字を押すと直せます。ルビは「｜親文字《おやもじ》」、漢字だけなら「漢字《かんじ》」。'));
+  }
+  vecProps(P) {
+    const app = this.app, o = app.vecOpts, set = (k, v) => app.updateOpts('vec', { [k]: v });
+    this.subList(P, [{ id: 'widen', name: '線を太らせる' }, { id: 'thin', name: '線を細らせる' }], o.mode, (id) => { set('mode', id); this.refreshProps(); });
+    P.append(this.slider('範囲', o.size, { min: 4, max: 400, log: true, unit: 'px', fmt: (v) => Math.round(v) }, (v) => set('size', v)));
+    P.append(this.slider('変える量', o.amount, { min: 5, max: 100, unit: '%' }, (v) => set('amount', Math.round(v))));
+    P.append(el('p', { class: 'hint' }, 'ベクターレイヤーの線をなぞると、触れた線の太さが変わります（1回のなぞりで1本につき1回）。'));
   }
 
   /* ---- 部品 */
@@ -162,7 +223,7 @@ class ToolPanels {
     box.append(this.qSize.track, this.qOpa.track);
   }
   refreshQuick() {
-    const on = BRUSH_TOOLS.includes(this.app.toolName);
+    const on = BRUSH_TOOLS.includes(this.app.toolName) && !this.app.transforming;
     $('#quick').hidden = !on || !this.app.settings.quickSliders;
     if (on) { this.qSize.upd(); this.qOpa.upd(); }
   }

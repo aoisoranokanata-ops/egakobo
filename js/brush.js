@@ -7,7 +7,7 @@
 const BRUSH_DEFAULTS = {
   size: 10, opacity: 1, density: 1, hardness: 1, tip: 'round', flatRatio: 0.35, flatAngle: 45, spacing: 0.08,
   pSize: true, pMin: 0.1, pDensity: false, pDensityMin: 0.2, tiltSize: 0, tiltDensity: 0, azimuth: false,
-  stab: 6, taperIn: 0, taperOut: 0, grain: null, grainStrength: 0.8, erase: false,
+  stab: 6, taperIn: 0, taperOut: 0, grain: null, grainStrength: 0.8, erase: false, vectorMode: 'touch',
 };
 const SUBTOOLS = [
   { id: 'gpen', tool: 'pen', name: 'Gペン', s: { size: 8, pMin: 0.05, stab: 8 } },
@@ -27,6 +27,7 @@ const SUBTOOLS = [
   { id: 'erhard', tool: 'eraser', name: '硬め', s: { size: 30, erase: true, pMin: 0.3, stab: 2 } },
   { id: 'ersoft', tool: 'eraser', name: '軟らかめ', s: { size: 80, hardness: 0.2, density: 0.5, erase: true, pSize: false, pDensity: true, pDensityMin: 0.1, stab: 0, spacing: 0.1 } },
   { id: 'erbig', tool: 'eraser', name: 'ざっくり', s: { size: 200, erase: true, pSize: false, stab: 0 } },
+  { id: 'ervec', tool: 'eraser', name: 'ベクター用（交点まで）', s: { size: 16, erase: true, pSize: false, stab: 0, vectorMode: 'intersect' } },
 ];
 const subtoolById = (id) => SUBTOOLS.find((s) => s.id === id);
 function brushSettings(id, saved = {}) { return { ...BRUSH_DEFAULTS, ...subtoolById(id).s, ...(saved[id] || {}) }; }
@@ -76,7 +77,8 @@ function penAzimuth(p) {
 
 class BrushStroke {
   /* b = ブラシ設定、color = '#rrggbb'、curve = 筆圧の γ */
-  constructor(doc, layer, b, color, { gamma = 1, transparent = false } = {}) {
+  /* sink を渡すと描画先をそこにする（ベクターの描き直し: sink.tile(tx, ty) が canvas か null を返す） */
+  constructor(doc, layer, b, color, { gamma = 1, transparent = false, sink = null, target = 'tiles' } = {}) {
     this.doc = doc; this.layer = layer; this.b = b; this.color = color;
     this.gamma = gamma;
     this.erase = b.erase || transparent;
@@ -87,7 +89,9 @@ class BrushStroke {
     this.nextAt = 0;          // 次の点を置く長さ
     this.last = null;
     const grain = b.grain ? Grain.get(b.grain, b.grainStrength) : null;
-    doc.beginStroke(layer, { erase: this.erase, opacity: b.opacity, grain });
+    this.sink = sink;
+    this.grain = grain;
+    if (!sink) doc.beginStroke(layer, { erase: this.erase, opacity: b.opacity, grain, target });
     this.tip = b.hardness < 0.99 ? TipCache.get(b.hardness, this.erase ? '#000000' : color) : null;
     this.bounds = null;
   }
@@ -186,7 +190,9 @@ class BrushStroke {
     const color = this.erase ? '#000000' : this.color;
     for (let ty = Math.max(0, ty0); ty <= Math.min(doc.rows - 1, ty1); ty++) {
       for (let tx = Math.max(0, tx0); tx <= Math.min(doc.cols - 1, tx1); tx++) {
-        const g = ctx2d(doc.strokeTile(tx, ty));
+        const tile = this.sink ? this.sink.tile(tx, ty) : doc.strokeTile(tx, ty);
+        if (!tile) continue;
+        const g = ctx2d(tile);
         g.setTransform(1, 0, 0, 1, -tx * TILE, -ty * TILE);
         g.globalAlpha = a;
         if (this.tip) {
@@ -201,31 +207,36 @@ class BrushStroke {
           else g.arc(d.x, d.y, r, 0, Math.PI * 2);
           g.fill();
         }
-        doc.comp.invalidate(tx, ty);
+        if (!this.sink) doc.comp.invalidate(tx, ty);
       }
     }
   }
 
   /* 離した: 補正の遅れを取り戻し、抜きがあれば描き直してから確定 */
   end() {
+    this.finish();
+    if (this.layer.kind === 'vector' && !this.erase && this.doc.stroke && this.doc.stroke.target === 'tiles') { vectorCommit(this); return; }
+    this.doc.commitStroke(this.doc.stroke && this.doc.stroke.target === 'mask' ? 'マスク' : this.erase ? '消しゴム' : 'ブラシ');
+  }
+  finish() {
     if (this.raw.length) {
       const last = this.raw[this.raw.length - 1];
       for (let i = 0; i < this.raw.length; i++) { this.raw.push(last); this.raw.shift(); this.pushPoint(this.average()); }
-      const P = this.pts;
-      if (P.length >= 2) { const a = P[P.length - 2], c = P[P.length - 1]; this.placeFrom(mid(a, c), c, c); }
     }
+    const P = this.pts;
+    if (P.length >= 2) { const a = P[P.length - 2], c = P[P.length - 1]; this.placeFrom(mid(a, c), c, c); }
     if (this.b.taperOut > 0 && this.dabs.length > 2) {
       const total = this.dist, len = this.b.taperOut * this.b.size;
-      this.doc.clearStroke();
+      if (this.sink) this.sink.clear(); else this.doc.clearStroke();
       for (const d of this.dabs) {
         const f = taperCurve((total - d.along) / len);
         if (f < 1) d.s *= f;
         this.drawDab(d);
       }
     }
-    // 1点だけ（タップ）の時も見えるように
-    this.doc.commitStroke(this.erase ? '消しゴム' : 'ブラシ');
   }
+  /* 補正済みの点の列から描き直す（ベクター） */
+  replay(pts) { for (const q of pts) this.pushPoint(q); this.finish(); }
   cancel() { this.doc.cancelStroke(); }
 }
 function mid(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, pr: (a.pr + b.pr) / 2, alt: (a.alt + b.alt) / 2, az: b.az, tw: b.tw }; }

@@ -1,7 +1,7 @@
 'use strict';
 /* 共通の小道具。トップレベルの宣言は全 js で共有される。 */
 
-const APP_VERSION = '0.1.0';
+const APP_VERSION = '0.2.0';
 const TILE = 256;
 const LS = 'egakobo.';
 
@@ -52,6 +52,15 @@ let _readC = null;
 function readTilePixels(tile) {
   if (!_readC) _readC = newCanvas(TILE, TILE);
   const g = _readC.getContext('2d', { willReadFrequently: true });
+  g.clearRect(0, 0, TILE, TILE);
+  if (tile) g.drawImage(tile, 0, 0);
+  return g.getImageData(0, 0, TILE, TILE);
+}
+
+let _readC2 = null;
+function readTilePixelsB(tile) {           // 2枚目の読み出し用（1枚目と同時に使う時）
+  if (!_readC2) _readC2 = newCanvas(TILE, TILE);
+  const g = _readC2.getContext('2d', { willReadFrequently: true });
   g.clearRect(0, 0, TILE, TILE);
   if (tile) g.drawImage(tile, 0, 0);
   return g.getImageData(0, 0, TILE, TILE);

@@ -53,6 +53,11 @@ class App {
       fillSub: ts.fillSub || 'fill-ref',
       fillSaved: ts.fillSaved || {},
       eyedropper: ts.eyedropper || 'all',
+      sel: { ...SEL_DEFAULTS, ...(ts.sel || {}) },
+      shape: { ...SHAPE_DEFAULTS, ...(ts.shape || {}) },
+      grad: { ...GRAD_DEFAULTS, ...(ts.grad || {}) },
+      vec: { mode: 'widen', size: 30, amount: 20, ...(ts.vec || {}) },
+      text: ts.text || null,
     };
     this.doc = null;
     this.screen = 'gallery';
@@ -71,7 +76,19 @@ class App {
     this.tools.eyedropper = new EyedropperTool(this);
     this.tools.move = new MoveTool(this);
     this.tools.hand = new NullTool(); this.tools.zoom = new NullTool();
+    this.tools.select = new SelectTool(this);
+    this.tools.shape = new ShapeTool(this);
+    this.tools.gradient = new GradientTool(this);
+    this.tools.text = new TextTool(this);
+    this.tools.vecedit = new VectorWidthTool(this);
+    this.vecErase = new VectorEraseTool(this);
+    this.transformTool = new TransformTool(this);
+    this.adjustPanel = new AdjustPanel(this);
+    this.textPanel = new TextPanel(this);
+    this.selLauncher = new SelLauncher(this);
     this.color.on(() => this.view.request());
+    // 選択範囲の点線を動かす
+    setInterval(() => { if (this.doc && this.doc.sel && !document.hidden && this.screen === 'editor') { this.view.ants = (this.view.ants + 1) % 16; this.view.request(); } }, 180);
     this.bindUI();
     this.bindKeys();
     this.setTool(this.toolOpts.current, true);
@@ -88,14 +105,27 @@ class App {
     window.addEventListener('pagehide', () => this.saveNow());
   }
   saveSettings() { saveLS('settings', this.settings); }
-  saveTools() { saveLS('tools', { current: this.toolOpts.current, sub: this.toolOpts.sub, brushSaved: this.toolOpts.brushSaved, fillSub: this.toolOpts.fillSub, fillSaved: this.toolOpts.fillSaved, eyedropper: this.toolOpts.eyedropper }); }
+  saveTools() { const t = this.toolOpts; saveLS('tools', { current: t.current, sub: t.sub, brushSaved: t.brushSaved, fillSub: t.fillSub, fillSaved: t.fillSaved, eyedropper: t.eyedropper, sel: t.sel, shape: t.shape, grad: t.grad, vec: t.vec, text: t.text }); }
+  get selOpts() { return this.toolOpts.sel; }
+  get shapeOpts() { return this.toolOpts.shape; }
+  get gradOpts() { return this.toolOpts.grad; }
+  get vecOpts() { return this.toolOpts.vec; }
+  updateOpts(kind, patch) { Object.assign(this.toolOpts[kind], patch); this.saveTools(); this.view.request(); }
   pressureGamma() { return Math.pow(2, (this.settings.pressureHard - 1) * 1.2); }
 
   // ---- 道具
   get toolName() { return this.toolOpts.current; }
-  get tool() { return this.tools[this.toolName]; }
+  get tool() {
+    if (this.transforming) return this.transformTool;
+    const a = this.doc && this.doc.active;
+    if (this.toolName === 'eraser' && a && a.kind === 'vector' && !this.doc.maskEdit) return this.vecErase;
+    return this.tools[this.toolName];
+  }
+  get transforming() { return this.transformTool && this.transformTool.active; }
   setTool(id, quiet = false) {
     if (this.view.mode === 'tool') return;
+    if (this.transforming) this.transformTool.finish(true);
+    if (this.tools.select && this.tools.select.poly && id !== 'select') this.tools.select.poly = null;
     if (this.tool && this.tool.cancel) this.tool.cancel();
     this.toolOpts.current = id;
     this._brush = null;
@@ -136,13 +166,24 @@ class App {
   /* 描けない理由（無ければ null） */
   cannotEdit(tool) {
     if (!this.doc) return '作品が開かれていません';
-    if (tool instanceof NullTool || tool instanceof EyedropperTool) return null;
-    const a = this.doc.active;
+    if (this.adjustPanel.open) return '色調補正のパネルを閉じてから描いてください（OK かキャンセル）';
+    if (this.textPanel.open && !(tool instanceof TextTool)) return 'テキストの編集を終えてください（OK）';
+    if (tool instanceof NullTool || tool instanceof EyedropperTool || tool instanceof TransformTool || tool instanceof TextTool) return null;
+    const doc = this.doc, a = doc.active;
+    if (tool instanceof SelectTool) return tool.o.sub === 'wand' && tool.o.ref === 'layer' && (!a || !a.hasTiles) ? '自動選択（編集レイヤー）は描いてあるレイヤーで使います' : null;
     if (!a || a.kind === 'paper') return '描くレイヤーを選んでください';
-    if (tool instanceof MoveTool) return this.doc.effectiveLocked(a) ? 'レイヤーがロックされています' : null;
-    if (a.isFolder) return 'フォルダーには描けません。中のレイヤーを選んでください';
-    if (this.doc.effectiveLocked(a)) return 'レイヤーがロックされています';
-    if (!this.doc.effectiveVisible(a)) return '非表示のレイヤーには描けません';
+    if (tool instanceof MoveTool) return doc.effectiveLocked(a) ? 'レイヤーがロックされています' : null;
+    if (a.isFolder && !doc.maskEdit) return 'フォルダーには描けません。中のレイヤーを選んでください';
+    if (doc.effectiveLocked(a)) return 'レイヤーがロックされています';
+    if (!doc.effectiveVisible(a)) return '非表示のレイヤーには描けません';
+    if (doc.maskEdit) return a.mask ? null : 'マスクがありません';
+    if (tool instanceof VectorWidthTool) return a.kind === 'vector' ? null : '線修正はベクターレイヤーで使います';
+    if (a.kind === 'adjust') return '色調補正レイヤーには描けません（マスクを作ると、マスクに描けます）';
+    if (a.kind === 'text') return 'テキストレイヤーには描けません（テキストツールで直すか、ラスタライズしてください）';
+    if (a.kind === 'vector') {
+      if (tool instanceof BrushTool && this.color.transparent) return 'ベクターレイヤーでは透明色は使えません（消しゴムを使ってください）';
+      if (!(tool instanceof BrushTool || tool instanceof VectorEraseTool)) return 'ベクターレイヤーで使えるのはペン・鉛筆・筆・エアブラシ・消しゴムです';
+    }
     return null;
   }
   afterEdit() { this.layerPanel.refreshThumbs(); }
@@ -154,7 +195,7 @@ class App {
     if (x < 0 || y < 0 || x >= d.width || y >= d.height) return;
     const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
     let tile;
-    if (src === 'layer') { const a = d.active; tile = a && a.isRaster ? a.tiles.get(tkey(tx, ty)) : null; if (!tile) return; }
+    if (src === 'layer') { const a = d.active; tile = a && a.hasTiles ? a.tiles.get(tkey(tx, ty)) : null; if (!tile) return; }
     else tile = d.comp.get(0, tx, ty).c;
     if (!this._pickC) this._pickC = newCanvas(1, 1);
     const g = this._pickC.getContext('2d', { willReadFrequently: true });
@@ -226,12 +267,16 @@ class App {
     requestAnimationFrame(() => { this.view.resize(); this.view.fit(); });
     this.layerPanel.thumbs.clear();
     this.layerPanel.refresh();
+    this.selLauncher.refresh();
+    this.panels.refreshProps();
     this.refreshUndo();
     this.onViewFlags();
     this.setSaveState('saved');
   }
   async closeDoc() {
     if (!this.doc) { this.showGallery(); return; }
+    if (this.transforming) this.transformTool.finish(true);
+    this.closePanels();
     await this.saveNow();
     if (this.saveState === 'error' && !(await confirmBox('保存できていません', '保存に失敗しています。このまま作品一覧に戻りますか？（最後に保存した所までになります）', '戻る', true))) return;
     this.doc.comp.dispose();
@@ -240,11 +285,69 @@ class App {
     this.showGallery();
   }
   onDocChange(kind) {
-    if (kind !== 'pixels') this.layerPanel.refresh();
     this.view.request();
+    if (kind === 'quiet') return;
+    if (kind !== 'pixels') this.layerPanel.refresh();
+    this.selLauncher.refresh();
     this.scheduleSave();
   }
-  onActiveChanged() { this.layerPanel.refresh(); }
+  onActiveChanged() { this.layerPanel.refresh(); this.panels.refreshProps(); this.view.request(); }
+
+  // ---- 変形
+  startTransform(mode = 'scale') {
+    if (!this.doc || this.view.mode === 'tool') return;
+    if (this.transforming) { this.transformTool.setMode(mode); return; }
+    this.closePanels();
+    this.transformTool.start(mode);
+  }
+  enterTransform() { this.panels.refreshQuick(); this.selLauncher.refresh(); this.view.request(); }
+  exitTransform() { this.panels.refreshQuick(); this.selLauncher.refresh(); this.view.request(); }
+  closePanels() {
+    if (this.adjustPanel.open) this.adjustPanel.close(false);
+    if (this.textPanel.open) this.textPanel.close(true);
+  }
+
+  // ---- 色調補正・フィルター
+  runAdjust(key, asLayer = false) {
+    const doc = this.doc;
+    if (!doc) return;
+    if (this.transforming) this.transformTool.finish(true);
+    const def = adjustDef(key);
+    if (!asLayer) { this.adjustPanel.show(def); return; }
+    const before = doc.snapshot();
+    const l = new Layer('adjust', def.label);
+    l.adj = { type: key, params: adjustDefaults(def) };
+    LayerOps.placeNew(doc, l);
+    doc.activeId = l.id;
+    doc.invalidateAll();
+    this.layerPanel.refresh();
+    this.adjustPanel.show(def, { mode: 'layer', layer: l });
+    this.adjustPanel.before = before;
+    this.adjustPanel.onCancel = () => { doc.restore(before); doc.changed('struct'); };
+  }
+  editAdjustLayer(l) {
+    if (!l.adj) return;
+    this.layerPanel.refresh();
+    this.adjustPanel.show(adjustDef(l.adj.type), { mode: 'layer', layer: l });
+  }
+  layerMoreMenu() {
+    const d = this.doc, a = d && d.active;
+    return [
+      ['新規ベクターレイヤー', () => LayerOps.add(d, 'vector')],
+      ['新規色調補正レイヤー（トーンカーブ）', () => this.runAdjust('curves', true)],
+      ['新規色調補正レイヤー（色相・彩度・明度）', () => this.runAdjust('hsv', true)],
+      '-',
+      ['レイヤーマスクを作成', () => LayerOps.addMask(d)],
+      ['選択範囲外をマスク', () => LayerOps.addMask(d, true)],
+      [a && a.mask && a.maskOn ? 'マスクを無効にする' : 'マスクを有効にする', () => { if (a && a.mask) d.setProps(a, { maskOn: !a.maskOn }, 'マスクの有効/無効'); }],
+      ['マスクを適用', () => LayerOps.applyMask(d)],
+      ['マスクを削除', () => LayerOps.deleteMask(d)],
+      '-',
+      ['ラスタライズ', () => LayerOps.rasterize(d)],
+      ['レイヤーを消去（中身を消す）', () => LayerOps.clear(d)],
+      ['描いてある所を選択範囲に', () => SelOps.fromLayer(d)],
+    ];
+  }
   refreshUndo() {
     const h = this.doc && this.doc.history;
     $('#btnUndo').disabled = !(h && h.canUndo);
@@ -371,6 +474,7 @@ class App {
       const l = new Layer('raster', (f.name || '画像').replace(/\.[^.]+$/, ''));
       drawImageToLayer(d, l, bmp, Math.round((d.width - w) / 2), Math.round((d.height - h) / 2), w, h);
       d.structEdit('画像を読み込む', () => { LayerOps.placeNew(d, l); d.activeId = l.id; });
+      this.startTransform();             // 読み込んだらすぐ大きさ・位置を合わせられるように
     } catch (e) { toast('画像を読めません: ' + e.message, { error: true }); }
   }
   async exportImage(type) {
@@ -468,12 +572,41 @@ class App {
         ['取り消し', () => this.undo(), '⌘Z'],
         ['やり直し', () => this.redo(), '⇧⌘Z'],
         '-',
+        ['切り取り', () => Clip.copy(d(), true), '⌘X'],
+        ['コピー', () => Clip.copy(d()), '⌘C'],
+        ['貼り付け', () => Clip.paste(this), '⌘V'],
+        '-',
+        ['拡大・縮小・回転', () => this.startTransform('scale'), '⌘T'],
+        ['自由変形', () => this.startTransform('free')],
+        ['メッシュ変形', () => this.startTransform('mesh')],
+        '-',
         ['メインカラーでレイヤーを塗りつぶす', () => fillLayerSolid(d(), this.color.main)],
-        ['レイヤーを消去', () => LayerOps.clear(d()), 'Del'],
+        ['選択範囲の中を消去', () => SelOps.clear(d()), 'Del'],
       ],
+      select: [
+        ['すべてを選択', () => SelOps.all(d()), '⌘A'],
+        ['選択を解除', () => SelOps.none(d()), '⌘D'],
+        ['選択範囲を反転', () => SelOps.invert(d()), '⇧⌘I'],
+        '-',
+        ['選択範囲を広げる', () => SelOps.grow(this, 1)],
+        ['選択範囲を縮める', () => SelOps.grow(this, -1)],
+        ['境界をぼかす', () => SelOps.feather(this)],
+        '-',
+        ['描いてある所を選択', () => SelOps.fromLayer(d())],
+        ['選択範囲の外を消去', () => SelOps.clearOutside(d())],
+        ['選択範囲をメインカラーで塗る', () => SelOps.fill(d(), this.color.main)],
+        ['選択範囲を新しいレイヤーに', () => Clip.toNewLayer(this)],
+      ],
+      adjust: [
+        ...ADJUSTMENTS.map((a) => [a.label, () => this.runAdjust(a.key)]),
+        '-',
+        ...ADJUSTMENTS.filter((a) => a.key !== 'invert').map((a) => [a.label + '（補正レイヤー）', () => this.runAdjust(a.key, true)]),
+      ],
+      filter: FILTERS.map((f) => [f.label, () => this.runAdjust(f.key)]),
       layer: [
         ['新規ラスターレイヤー', () => LayerOps.add(d()), '⇧⌘N'],
         ['新規フォルダー', () => LayerOps.add(d(), 'folder')],
+        ['新規ベクターレイヤー', () => LayerOps.add(d(), 'vector')],
         ['レイヤーを複製', () => LayerOps.duplicate(d())],
         ['レイヤーを削除', () => LayerOps.remove(d())],
         '-',
@@ -481,6 +614,12 @@ class App {
         ['下のレイヤーでクリッピング', () => { const a = d().active; if (a && a.kind !== 'paper') d().setProps(a, { clip: !a.clip }, 'クリッピング'); }],
         ['下描きレイヤーにする／戻す', () => { const a = d().active; if (a && a.kind !== 'paper') d().setProps(a, { draft: !a.draft }, '下描きレイヤー'); }],
         ['参照レイヤーにする／戻す', () => { const a = d().active; if (a && a.kind !== 'paper') d().setProps(a, { ref: !a.ref }, '参照レイヤー'); }],
+        '-',
+        ['レイヤーマスクを作成', () => LayerOps.addMask(d())],
+        ['選択範囲外をマスク', () => LayerOps.addMask(d(), true)],
+        ['マスクを適用', () => LayerOps.applyMask(d())],
+        ['マスクを削除', () => LayerOps.deleteMask(d())],
+        ['ラスタライズ', () => LayerOps.rasterize(d())],
       ],
       view: [
         ['全体を表示', () => this.view.fit(), '⌘0'],
@@ -581,13 +720,30 @@ class App {
       if (mod && k === '-') { e.preventDefault(); this.view.zoomStep(-1); return; }
       if (mod && k === 's') { e.preventDefault(); this.saveNow(); return; }
       if (mod && k === 'e') { e.preventDefault(); LayerOps.mergeDown(this.doc); return; }
+      if (mod && k === 'a') { e.preventDefault(); SelOps.all(this.doc); return; }
+      if (mod && k === 'd') { e.preventDefault(); SelOps.none(this.doc); return; }
+      if (mod && e.shiftKey && k === 'i') { e.preventDefault(); SelOps.invert(this.doc); return; }
+      if (mod && k === 't') { e.preventDefault(); this.startTransform(); return; }
+      if (mod && k === 'c') { e.preventDefault(); Clip.copy(this.doc); return; }
+      if (mod && k === 'x') { e.preventDefault(); Clip.copy(this.doc, true); return; }
+      if (mod && k === 'v') { e.preventDefault(); Clip.paste(this); return; }
       if (mod && e.shiftKey && k === 'n') { e.preventDefault(); LayerOps.add(this.doc); return; }
       if (mod) return;
       if (k === ' ') { this.view.spaceDown = true; e.preventDefault(); return; }
       if (k === 'tab') { e.preventDefault(); this.togglePanels(); return; }
       if (k === 'x') { this.color.swap(); return; }
       if (k === 'c') { this.color.setTransparent(!this.color.transparent); return; }
-      if (k === 'delete' || k === 'backspace') { LayerOps.clear(this.doc); return; }
+      if (k === 'delete' || k === 'backspace') { SelOps.clear(this.doc); return; }
+      if (k === 'enter') {
+        if (this.transforming) this.transformTool.finish(true);
+        else if (this.tools.select.poly) this.tools.select.closePoly();
+        return;
+      }
+      if (k === 'escape') {
+        if (this.transforming) this.transformTool.finish(false);
+        else if (this.tools.select.poly) { this.tools.select.poly = null; this.view.request(); }
+        return;
+      }
       if (e.key === '[' || e.key === ']') {
         const b = this.brush;
         if (b) { this.updateBrush({ size: clamp(Math.round(b.size * (e.key === ']' ? 1.15 : 1 / 1.15) * 10) / 10, 0.5, 1000) }); this.panels.refreshProps(); }

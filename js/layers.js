@@ -16,16 +16,59 @@ const LayerOps = {
     return `${base} ${n}`;
   },
   add(doc, kind = 'raster') {
-    const l = new Layer(kind, this.nextName(doc, kind === 'folder' ? 'フォルダー' : 'レイヤー'));
-    doc.structEdit(kind === 'folder' ? 'フォルダーを作成' : 'レイヤーを作成', () => { this.placeNew(doc, l); doc.activeId = l.id; });
+    const base = { folder: 'フォルダー', vector: 'ベクター', raster: 'レイヤー' }[kind] || 'レイヤー';
+    const l = new Layer(kind, this.nextName(doc, base));
+    doc.structEdit(kind === 'folder' ? 'フォルダーを作成' : 'レイヤーを作成', () => { this.placeNew(doc, l); doc.activeId = l.id; doc.maskEdit = false; });
     return l;
   },
   clone(l) {
     const c = new Layer(l.kind, l.name);
     for (const k of LAYER_PROPS) c[k] = l[k];
     if (l.tiles) for (const [k, t] of l.tiles) c.tiles.set(k, copyTile(t));
+    if (l.mask) { c.mask = new Map(); for (const [k, t] of l.mask) c.mask.set(k, copyTile(t)); }
+    if (l.strokes) c.strokes = l.strokes.slice();
     if (l.children) c.children = l.children.map((x) => this.clone(x));
     return c;
+  },
+  /* テキスト・ベクターを普通のラスターに */
+  rasterize(doc, l = doc.active) {
+    if (!l || (l.kind !== 'text' && l.kind !== 'vector')) { toast('テキスト・ベクターレイヤーを選んでください'); return false; }
+    doc.structEdit('ラスタライズ', () => { l.kind = 'raster'; l.text = null; l.strokes = null; });
+    return true;
+  },
+  // ---- マスク
+  addMask(doc, fromSel = false) {
+    const a = doc.active;
+    if (!a || a.kind === 'paper') return;
+    doc.structEdit('レイヤーマスク', () => {
+      const m = new Map();
+      if (fromSel && doc.sel) {
+        // 選択範囲の外を隠す
+        for (const [, , k] of doc.gridKeys()) {
+          const st = doc.sel.tiles.get(k), c = TilePool.get(), g = ctx2d(c);
+          g.fillStyle = '#fff'; g.fillRect(0, 0, TILE, TILE);
+          if (st) { g.globalCompositeOperation = 'destination-out'; g.drawImage(st, 0, 0); g.globalCompositeOperation = 'source-over'; }
+          if (tileHasAlpha(c)) { m.set(k, c); doc.markTile(a, k, true); } else TilePool.put(c);
+        }
+      }
+      a.mask = m; a.maskOn = true;
+      doc.maskEdit = true;
+    });
+  },
+  deleteMask(doc) {
+    const a = doc.active;
+    if (!a || !a.mask) return;
+    doc.structEdit('マスクを削除', () => { a.mask = null; doc.maskEdit = false; });
+  },
+  applyMask(doc) {
+    const a = doc.active;
+    if (!a || !a.mask || !a.isRaster) { toast('ラスターレイヤーのマスクだけ適用できます'); return; }
+    doc.history.begin();
+    doc.pixelEdit('マスクを適用', a, (touch) => {
+      for (const [k, h] of a.mask) { const t = a.tiles.get(k); if (!t) continue; touch(k); const g = ctx2d(t); g.globalCompositeOperation = 'destination-out'; g.drawImage(h, 0, 0); g.globalCompositeOperation = 'source-over'; }
+    });
+    doc.structEdit('マスクを適用', () => { a.mask = null; doc.maskEdit = false; });
+    doc.history.end('マスクを適用');
   },
   duplicate(doc) {
     const a = doc.active;
@@ -37,18 +80,26 @@ const LayerOps = {
   remove(doc) {
     const a = doc.active;
     if (!a || a.kind === 'paper') return;
-    const rasters = doc.layers().filter((l) => l.isRaster);
-    const inside = a.isFolder ? [...doc.walk(a.children)].filter((l) => l.isRaster).length : 1;
-    if (rasters.length - inside < 1) { toast('最後のレイヤーは削除できません'); return; }
+    const all = doc.layers().filter((l) => l.kind !== 'paper' && l.kind !== 'folder');
+    const inside = a.isFolder ? [...doc.walk(a.children)].filter((l) => l.kind !== 'folder').length : 1;
+    if (all.length - inside < 1) { toast('最後のレイヤーは削除できません'); return; }
     doc.structEdit('レイヤーを削除', () => {
       const p = doc.parentOf(a), i = p.children.indexOf(a);
       p.children.splice(i, 1);
       const next = p.children[i - 1] && p.children[i - 1].kind !== 'paper' ? p.children[i - 1] : p.children[i] || (p !== doc.root ? p : null);
-      doc.activeId = next ? next.id : doc.layers().reverse().find((l) => l.isRaster).id;
+      doc.activeId = next ? next.id : doc.layers().reverse().find((l) => l.kind !== 'paper' && l.kind !== 'folder').id;
+      doc.maskEdit = false;
     });
   },
   clear(doc) {
     const a = doc.active;
+    if (a && a.kind === 'vector' && a.strokes.length) {
+      const before = a.strokes;
+      a.strokes = [];
+      rerenderVectorDiff(doc, a, before, a.strokes);
+      doc.history.push(new SwapCmd('レイヤーを消去', a, 'strokes', before, a.strokes, rerenderVectorDiff));
+      return;
+    }
     if (!a || !a.isRaster || !a.tiles.size) return;
     const before = new Map(a.tiles);
     a.tiles.clear();
@@ -64,7 +115,7 @@ const LayerOps = {
   mergeDown(doc) {
     const a = doc.active;
     const b = a && this.below(doc, a);
-    if (!a || !a.isRaster || !b || !b.isRaster) { toast('下にラスターレイヤーがある時だけ結合できます'); return; }
+    if (!a || !a.hasTiles || !b || !b.isRaster) { toast('下がラスターレイヤーの時だけ結合できます'); return; }
     if (b.locked) { toast('下のレイヤーがロックされています'); return; }
     doc.history.begin();
     if (a.visible) {
@@ -74,12 +125,16 @@ const LayerOps = {
           if (!bt && (a.clip || b.alphaLock)) continue;
           touch(k);
           if (!bt) { bt = TilePool.get(); b.tiles.set(k, bt); }
+          let src = t;
+          const h = a.mask && a.maskOn ? a.mask.get(k) : null;
+          if (h) { src = copyTile(t); const sg = ctx2d(src); sg.globalCompositeOperation = 'destination-out'; sg.drawImage(h, 0, 0); }
           const g = ctx2d(bt);
           g.save();
           g.globalAlpha = a.opacity;
           g.globalCompositeOperation = a.clip && a.blend === 'normal' ? 'source-atop' : BLEND_OP[a.blend] || 'source-over';
-          g.drawImage(t, 0, 0);
+          g.drawImage(src, 0, 0);
           g.restore();
+          if (h) TilePool.put(src);
         }
       });
     }
@@ -153,7 +208,7 @@ class LayerPanel {
       btn('⤓', '下のレイヤーに結合', () => LayerOps.mergeDown(this.doc)),
       btn('▲', '上へ', () => LayerOps.move(this.doc, 1)),
       btn('▼', '下へ', () => LayerOps.move(this.doc, -1)),
-      btn('⌫', 'レイヤーを消去（中身を消す）', () => LayerOps.clear(this.doc)),
+      this.moreBtn = btn('⋯', 'その他（ベクター・色調補正レイヤー・マスク）', () => this.app.popup(this.moreBtn, this.app.layerMoreMenu())),
       btn('🗑', '削除', () => LayerOps.remove(this.doc))));
   }
   refresh() {
@@ -197,7 +252,29 @@ class LayerPanel {
         if (this.app.color.main !== l.color) doc.setProps(l, { color: this.app.color.main }, '用紙の色');
       } });
       r.append(sw);
-    } else r.append(this.thumb(l));
+    } else if (l.kind === 'adjust') {
+      r.append(el('button', { class: 'ficon adj', title: '色調補正の設定を開く', onclick: (e) => { e.stopPropagation(); doc.activeId = l.id; this.app.editAdjustLayer(l); } }, '◐'));
+    } else {
+      const th = this.thumb(l);
+      th.classList.toggle('editing', l.id === doc.activeId && !doc.maskEdit && !!l.mask);
+      const wrap = el('div', { class: 'thumb-wrap' }, th);
+      if (l.kind === 'vector') wrap.append(el('span', { class: 'kind' }, '✒'));
+      if (l.kind === 'text') wrap.append(el('span', { class: 'kind' }, 'T'));
+      wrap.addEventListener('click', (e) => { if (l.mask && doc.activeId === l.id && doc.maskEdit) { e.stopPropagation(); doc.maskEdit = false; this.app.onActiveChanged(); } });
+      r.append(wrap);
+    }
+    if (l.mask) {
+      const mt = this.maskThumb(l);
+      mt.classList.toggle('editing', l.id === doc.activeId && doc.maskEdit);
+      mt.classList.toggle('off', !l.maskOn);
+      mt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        doc.activeId = l.id; doc.maskEdit = true;
+        this.app.onActiveChanged();
+        toast('マスクに描きます（ペン＝見せる・消しゴム＝隠す）', { ms: 1600 });
+      });
+      r.append(mt);
+    }
     const badges = [];
     if (l.locked) badges.push('🔒');
     if (l.alphaLock) badges.push('▦');
@@ -214,7 +291,7 @@ class LayerPanel {
         return;
       }
       lastTap = now;
-      if (doc.activeId !== l.id) { doc.activeId = l.id; doc.metaDirty = true; this.app.onActiveChanged(); }
+      if (doc.activeId !== l.id) { doc.activeId = l.id; doc.maskEdit = false; doc.metaDirty = true; this.app.onActiveChanged(); }
     });
     return r;
   }
@@ -239,11 +316,29 @@ class LayerPanel {
     g.drawImage(this._big, 0, 0, 44, 44);
     t.ver = l.ver;
   }
+  maskThumb(l) {
+    const key = 'm' + l.id;
+    let t = this.thumbs.get(key);
+    if (!t) { t = { c: newCanvas(44, 44), ver: -1 }; t.c.className = 'thumb mask'; this.thumbs.set(key, t); }
+    if (t.ver !== l.ver) {
+      const doc = this.doc, g = ctx2d(t.c);
+      const s = Math.min(44 / doc.width, 44 / doc.height), ox = (44 - doc.width * s) / 2, oy = (44 - doc.height * s) / 2;
+      g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, 44, 44);
+      g.fillStyle = '#fff'; g.fillRect(ox, oy, doc.width * s, doc.height * s);
+      g.globalCompositeOperation = 'destination-out';
+      for (const [k, c] of l.mask) { const [tx, ty] = parseKey(k); g.drawImage(c, ox + tx * TILE * s, oy + ty * TILE * s, TILE * s + 0.5, TILE * s + 0.5); }
+      g.globalCompositeOperation = 'destination-over'; g.fillStyle = '#000'; g.fillRect(ox, oy, doc.width * s, doc.height * s);
+      g.globalCompositeOperation = 'source-over';
+      t.ver = l.ver;
+    }
+    return t.c;
+  }
   /* 描いた後: サムネイルだけ描き直す（一覧は作り直さない） */
   refreshThumbs() {
     for (const l of this.doc.layers()) {
       const t = this.thumbs.get(l.id);
-      if (t && t.ver !== l.ver && l.isRaster) this.drawThumb(l, t);
+      if (t && t.ver !== l.ver && l.hasTiles) this.drawThumb(l, t);
+      if (l.mask) this.maskThumb(l);
     }
   }
 }
