@@ -7,7 +7,7 @@
    変わったタイルだけ書く（doc.unsaved）。どのレイヤーが保存済みかは doc._storedIds で持つ。 */
 
 const FORMAT = 'egakobo';
-const FORMAT_VERSION = 4;          // 2: ベクター・テキスト・色調補正レイヤー・マスク 3: コマ枠・トーン・フキダシ・定規
+const FORMAT_VERSION = 5;          // 2: ベクター・テキスト・色調補正レイヤー・マスク 3: コマ枠・トーン・フキダシ・定規
 
 const Store = {
   db: null,
@@ -205,7 +205,7 @@ function docMeta(doc) {
   };
   return {
     format: FORMAT, version: FORMAT_VERSION, width: doc.width, height: doc.height, dpi: doc.dpi, kind: doc.kind,
-    name: doc.name, active: doc.activeId, layers: doc.root.children.map(ser), app: APP_VERSION, ruler: doc.ruler, book: doc.book || null, spread: !!doc.spread,
+    name: doc.name, active: doc.activeId, layers: doc.root.children.map(ser), app: APP_VERSION, ruler: doc.ruler, book: doc.book || null, spread: !!doc.spread, anim: doc.anim || null, camera: doc.camera || null,
   };
 }
 /* JSON ＋ タイル画像の取り出し方 → 文書 */
@@ -234,6 +234,8 @@ async function docFromMeta(meta, getTile, name) {
   doc.ruler = meta.ruler || null;
   doc.book = meta.book || null;
   doc.spread = !!meta.spread;
+  doc.anim = meta.anim || null;
+  doc.camera = meta.camera || null;
   if (!doc.paper) { const p = new Layer('paper', '用紙'); doc.root.children.unshift(p); }
   // タイルを並行して読む（多すぎると iPad で詰まるので 16 本ずつ）
   for (let i = 0; i < jobs.length; i += 16) {

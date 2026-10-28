@@ -26,7 +26,7 @@ const BLEND_MODES = [
 const BLEND_OP = Object.fromEntries(BLEND_MODES.map((m) => [m.key, m.op]));
 
 /* 構造の履歴・保存で写す属性（text・adj は差し替えて使う＝中身を書き換えない） */
-const LAYER_PROPS = ['name', 'visible', 'opacity', 'blend', 'clip', 'locked', 'alphaLock', 'ref', 'draft', 'open', 'color', 'label', 'maskOn', 'text', 'adj', 'frame', 'tone', 'mono'];
+const LAYER_PROPS = ['name', 'visible', 'opacity', 'blend', 'clip', 'locked', 'alphaLock', 'ref', 'draft', 'open', 'color', 'label', 'maskOn', 'text', 'adj', 'frame', 'tone', 'mono', 'anim', 'timing', 'lightTable'];
 const KIND_NAMES = { raster: 'ラスター', vector: 'ベクター', text: 'テキスト', adjust: '色調補正', balloon: 'フキダシ', folder: 'フォルダー', paper: '用紙' };
 
 let _layerSeq = 1;
@@ -54,6 +54,9 @@ class Layer {
     this.frame = null;             // コマ枠（フォルダー）{pts, width, color}（manga.js）
     this.tone = null;              // トーン {lpi, angle, shape, color}
     this.mono = false;             // 表現色モノクロ（2値）
+    this.anim = false;             // アニメーションフォルダー（anim.js）
+    this.timing = null;            // [{f, cel}]
+    this.lightTable = null;        // ライトテーブルに出すセルの id
     this.tiles = kind === 'raster' || kind === 'vector' || kind === 'text' || kind === 'balloon' ? new Map() : null;
     this.balloons = kind === 'balloon' ? [] : null;
     this.children = kind === 'folder' || kind === 'root' ? [] : null;
@@ -93,6 +96,9 @@ class Doc {
     this.preview = null;           // 補正・フィルターの試し表示: {layer, tiles: Map}
     this.ruler = null;             // 定規（ruler.js）
     this.monoView = false;         // 画面をモノクロ2値で見る
+    this.anim = null;              // アニメーションの設定（anim.js）
+    this.camera = null;            // カメラのキー
+    this.playing = false;
     this.unsaved = new Set();      // 'layerId/tx,ty'（マスクは 'layerId/m:tx,ty'）
     this.metaDirty = true;
     this.cols = Math.ceil(width / TILE); this.rows = Math.ceil(height / TILE);

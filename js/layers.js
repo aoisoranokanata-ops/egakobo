@@ -246,7 +246,7 @@ class LayerPanel {
     if (l.clip) r.append(el('span', { class: 'clipmark' }, '┗'));
     if (l.isFolder) {
       r.append(el('button', { class: 'fold', onclick: (e) => { e.stopPropagation(); l.open = !l.open; this.refresh(); doc.metaDirty = true; } }, l.open ? '▾' : '▸'));
-      r.append(el('span', { class: 'ficon' + (l.frame ? ' frame' : '') }, l.frame ? '▭' : '📁'));
+      r.append(el('span', { class: 'ficon' + (l.frame ? ' frame' : '') }, l.frame ? '▭' : l.anim ? '🎞' : '📁'));
     } else if (l.kind === 'paper') {
       const sw = el('button', { class: 'paper-sw', style: `background:${l.color}`, title: '用紙の色をメインカラーにする', onclick: (e) => {
         e.stopPropagation();
@@ -285,6 +285,9 @@ class LayerPanel {
     if (l.tone) badges.push(`トーン${l.tone.lpi}線`);
     if (l.mono) badges.push('モノクロ');
     if (l.frame) badges.push('コマ枠');
+    if (l.anim) badges.push(`セル ${l.children.length} 枚`);
+    const pa = doc.parentOf(l);
+    if (pa && pa.anim && doc.anim) badges.push(celAt(pa, doc.anim.cur) === l.id ? '▶ いまのフレーム' : '');
     const info = l.kind === 'paper' ? '' : `${Math.round(l.opacity * 100)}% ${BLEND_MODES.find((m) => m.key === l.blend).label}`;
     r.append(el('div', { class: 'lname' }, el('span', { class: 'nm' }, l.name), el('span', { class: 'sub' }, badges.join(' ') + (badges.length ? '  ' : '') + info)));
     let lastTap = 0;

@@ -97,6 +97,10 @@ class App {
     this.textPanel = new TextPanel(this);
     this.selLauncher = new SelLauncher(this);
     this.pageMgr = new PageManager(this);
+    this.timeline = new Timeline(this);
+    this.player = new Player(this);
+    this.camTool = new CameraTool(this);
+    this.cameraEdit = false;
     this.work = null;                   // 開いているページの作品（複数ページの時）
     this.color.on(() => this.view.request());
     // 選択範囲の点線を動かす
@@ -133,6 +137,7 @@ class App {
   get toolName() { return this.toolOpts.current; }
   get tool() {
     if (this.transforming) return this.transformTool;
+    if (this.cameraEdit) return this.camTool;
     const a = this.doc && this.doc.active;
     if (this.toolName === 'eraser' && a && a.kind === 'vector' && !this.doc.maskEdit) return this.vecErase;
     return this.tools[this.toolName];
@@ -185,7 +190,13 @@ class App {
     if (this.adjustPanel.open) return '色調補正のパネルを閉じてから描いてください（OK かキャンセル）';
     if (this.textPanel.open && !(tool instanceof TextTool)) return 'テキストの編集を終えてください（OK）';
     if (tool instanceof NullTool || tool instanceof EyedropperTool || tool instanceof TransformTool || tool instanceof TextTool) return null;
-    if (tool instanceof FrameTool || tool instanceof RulerTool || tool instanceof EffectLineTool || tool instanceof BalloonTool) return null;
+    if (tool instanceof FrameTool || tool instanceof RulerTool || tool instanceof EffectLineTool || tool instanceof BalloonTool || tool instanceof CameraTool) return null;
+    // アニメーション: このフレームに出ていないセルには描かない（描いても見えないので）
+    if (this.doc.anim && this.doc.active) {
+      for (let l = this.doc.active, p = this.doc.parentOf(l); p && p !== this.doc.root; l = p, p = this.doc.parentOf(p)) {
+        if (p.anim) { if (celAt(p, this.doc.anim.cur) !== l.id) return 'このフレームに出ていないセルです（タイムラインでセルを指定するか、レイヤーを選び直してください）'; break; }
+      }
+    }
     const doc = this.doc, a = doc.active;
     if (tool instanceof SelectTool) return tool.o.sub === 'wand' && tool.o.ref === 'layer' && (!a || !a.hasTiles) ? '自動選択（編集レイヤー）は描いてあるレイヤーで使います' : null;
     if (!a || a.kind === 'paper') return '描くレイヤーを選んでください';
@@ -326,6 +337,9 @@ class App {
     $('#gallery').hidden = true; $('#pages').hidden = true; $('#editor').hidden = false;
     $('#docTitle').textContent = doc.name;
     this.refreshPageNav();
+    this.cameraEdit = false;
+    if (animFolders(doc).length || doc.kind === 'anime') ensureAnim(doc);
+    this.timeline.toggle(!!(doc.anim && (doc.kind === 'anime' || animFolders(doc).length)));
     this.view.rot = 0; this.view.flip = false;
     this.view.fitted = true;
     requestAnimationFrame(() => { this.view.resize(); this.view.fit(); });
@@ -352,11 +366,35 @@ class App {
   onDocChange(kind) {
     this.view.request();
     if (kind === 'quiet') return;
+    if (kind !== 'pixels' && this.timeline.open) this.timeline.render();
     if (kind !== 'pixels') this.layerPanel.refresh();
     this.selLauncher.refresh();
     this.scheduleSave();
   }
-  onActiveChanged() { this.layerPanel.refresh(); this.panels.refreshProps(); this.view.request(); }
+  onActiveChanged() { this.layerPanel.refresh(); this.panels.refreshProps(); this.view.request(); if (this.timeline.open) this.timeline.render(); }
+
+  // ---- アニメーション
+  setFrame(f) {
+    const d = this.doc;
+    if (!d) return;
+    const A = ensureAnim(d);
+    f = clamp(Math.round(f), 0, A.frames - 1);
+    if (f !== A.cur) { A.cur = f; d.metaDirty = true; d.invalidateAll(); }
+    AnimOps.followFrame(d);
+    this.layerPanel.refresh();
+    this.timeline.render(); this.timeline.scrollToCur();
+    this.view.request();
+  }
+  toggleCamera(on = !this.cameraEdit) {
+    if (on && !this.doc) return;
+    if (on) ensureAnim(this.doc);
+    this.cameraEdit = on;
+    if (on && !this.timeline.open) this.timeline.toggle(true);
+    this.timeline.render();
+    this.panels.refreshQuick();
+    this.view.request();
+    if (on) toast('カメラの枠を動かすと、いまのフレームにキーを打ちます（中=移動・角=拡大縮小・丸=回転）', { ms: 3000 });
+  }
 
   // ---- 変形
   startTransform(mode = 'scale') {
@@ -523,6 +561,14 @@ class App {
     }
     const doc = Doc.create({ width: w, height: h, dpi, name, paper: paperSel.value || null, kind: sel.kind });
     doc.book = book;
+    if (sel.kind === 'anime') {
+      // アニメ: 背景レイヤー＋アニメーションフォルダー（セル 1）から
+      ensureAnim(doc);
+      doc.active.name = '背景';
+      const f = new Layer('folder', 'アニメーション 1'); f.blend = 'normal'; f.anim = true;
+      const cel = new Layer('raster', '1'); f.children.push(cel); f.timing = [{ f: 0, cel: cel.id }];
+      doc.root.children.push(f); doc.activeId = cel.id;
+    }
     if (sel.kind === 'manga') {
       // マンガ: 下描き・線画・ベタ の3枚から始める（CSP の新規原稿と同じ考え方）
       const draft = doc.active; draft.name = '下描き'; draft.draft = true; draft.opacity = 0.5;
@@ -668,6 +714,7 @@ class App {
         ['Webtoon 用に分割して書き出す…', () => Exporter.webtoon(this)],
         '-',
         ['作品の設定（仕上がり・基本枠・綴じ・ノンブル）…', () => this.bookSettings()],
+        ['アニメーションを書き出す（MP4・GIF・連番）…', () => VideoExport.dialog(this)],
         ['ページ管理', async () => { if (!this.doc) return; const wid = this.doc.workId; const w = await Store.getWork(wid); if (w && !w.pages) { PageOps.ensureMulti(w); await Store.putWork(w); } await this.closeDoc(); if (!this.work) this.pageMgr.show(wid); }],
         '-',
         ['今すぐ保存', async () => { await this.saveNow(); if (this.saveState === 'saved') toast('保存しました'); }],
@@ -729,6 +776,7 @@ class App {
         ['新規ラスターレイヤー', () => LayerOps.add(d()), '⇧⌘N'],
         ['新規フォルダー', () => LayerOps.add(d(), 'folder')],
         ['新規ベクターレイヤー', () => LayerOps.add(d(), 'vector')],
+        ['新規アニメーションフォルダー', () => { AnimOps.newFolder(this); this.timeline.toggle(true); }],
         ['レイヤーを複製', () => LayerOps.duplicate(d())],
         ['レイヤーを削除', () => LayerOps.remove(d())],
         '-',
@@ -753,6 +801,8 @@ class App {
         ['右に 15° 回転', () => this.view.rotateBy(Math.PI / 12)],
         ['回転を戻す', () => this.view.setRotation(0)],
         ['左右反転', () => this.view.toggleFlip(), 'H'],
+        ['タイムライン（アニメーション）', () => this.timeline.toggle()],
+        ['再生（プレーヤー）', () => this.player.show()],
         ['仕上がり線・基本枠のガイド', () => { this.settings.guides = !this.settings.guides; this.saveSettings(); this.view.request(); }],
         '-',
         ['パネルを隠す／出す', () => this.togglePanels(), 'Tab'],
@@ -866,6 +916,8 @@ class App {
       if (mod && k === 'v') { e.preventDefault(); Clip.paste(this); return; }
       if (mod && e.shiftKey && k === 'n') { e.preventDefault(); LayerOps.add(this.doc); return; }
       if (mod) return;
+      if (this.doc.anim && (e.key === ',' || e.key === '.')) { e.preventDefault(); this.setFrame(this.doc.anim.cur + (e.key === '.' ? 1 : -1)); return; }
+      if (this.doc.anim && e.key === '>') { e.preventDefault(); AnimOps.nextDrawing(this); return; }
       if (k === 'pageup' || k === 'pagedown') { e.preventDefault(); this.goPage(k === 'pagedown' ? 1 : -1); return; }
       if (k === ' ') { this.view.spaceDown = true; e.preventDefault(); return; }
       if (k === 'tab') { e.preventDefault(); this.togglePanels(); return; }

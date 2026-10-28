@@ -117,9 +117,10 @@ function renderList(doc, list, target, tx, ty, d, o) {
     if (L.kind === 'folder') {
       const anyClip = clips.some((c) => included(c, o));
       const hasMask = L.mask && L.maskOn && (L.mask.size || (o.preview && doc.stroke && doc.stroke.layer === L));
-      if (L.blend === 'passthrough' && L.opacity === 1 && !anyClip && !hasMask && !L.frame) { renderList(doc, L.children, target, tx, ty, d + 1, o); continue; }
+      if (L.blend === 'passthrough' && L.opacity === 1 && !anyClip && !hasMask && !L.frame && !L.anim) { renderList(doc, L.children, target, tx, ty, d + 1, o); continue; }
       const fg = clearTemp(T.F);
-      renderList(doc, L.children, fg, tx, ty, d + 1, o);
+      if (L.anim) renderAnimFolder(doc, L, fg, tx, ty, d, o);       // アニメーション: そのフレームのセルだけ
+      else renderList(doc, L.children, fg, tx, ty, d + 1, o);
       if (L.frame) applyFrame(T.F, L.frame, tx, ty);          // コマ枠: 枠の外を隠して枠線を描く
       src = applyMask(doc, L, T.F, key, T.A, o);
     } else {
