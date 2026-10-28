@@ -187,6 +187,8 @@ class View {
       g.strokeStyle = '#fff'; g.lineDashOffset = -this.ants + 4; g.stroke();
       g.setLineDash([]); g.lineDashOffset = 0;
     }
+    // 仕上がり線・基本枠・ノンブル
+    if (d.book && this.app.settings.guides) drawBookGuides(g, this, d);
     // 定規
     if (d.ruler) drawRuler(g, this, d.ruler, this.app.settings.snap);
     // ツールの補助表示（画面座標）

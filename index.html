@@ -31,6 +31,22 @@
   <footer class="gal-foot"><span id="galStorage"></span><span id="appVersion"></span></footer>
 </section>
 
+<!-- ページ管理 -->
+<section id="pages" class="screen" hidden>
+  <header class="gal-head">
+    <button id="pgBack" class="btn">‹ 作品一覧</button>
+    <h1 id="pgTitle" class="pg-title"></h1>
+    <div class="gal-actions">
+      <button id="pgAdd" class="btn primary">＋ ページ</button>
+      <button id="pgAddSpread" class="btn">＋ 見開きページ</button>
+      <button id="pgSettings" class="btn">作品の設定</button>
+      <button id="pgExport" class="btn">書き出し</button>
+    </div>
+  </header>
+  <div id="pgGrid" class="pg-grid"></div>
+  <footer class="gal-foot"><span id="pgInfo"></span><span>ページを押すと開きます。⋯ で追加・複製・並べ替え・削除</span></footer>
+</section>
+
 <!-- 編集画面 -->
 <section id="editor" class="screen" hidden>
   <header id="topbar">
@@ -45,7 +61,7 @@
       <button class="tb-btn" data-menu="manga">マンガ</button>
       <button class="tb-btn" data-menu="view">表示</button>
     </nav>
-    <div class="tb-title"><button id="docTitle" class="doc-title" title="作品名を変更"></button><button id="saveState" class="save-state saved">保存済み</button></div>
+    <div class="tb-title"><span id="pageNav" class="page-nav" hidden><button class="tb-btn icon" id="pgPrev" title="前のページ（PageUp）">◀</button><button class="tb-btn" id="pageNum" title="ページ管理へ"></button><button class="tb-btn icon" id="pgNext" title="次のページ（PageDown）">▶</button></span><button id="docTitle" class="doc-title" title="作品名を変更"></button><button id="saveState" class="save-state saved">保存済み</button></div>
     <div class="tb-right">
       <button class="tb-btn icon" id="btnFit" title="全体を表示（回転も戻す）">⤢</button>
       <button class="tb-btn icon" id="btnFlip" title="左右反転（Shift+H）">⇋</button>
@@ -92,6 +108,8 @@
 <script src="js/seltools.js"></script>
 <script src="js/manga.js"></script>
 <script src="js/ruler.js"></script>
+<script src="js/book.js"></script>
+<script src="js/pages.js"></script>
 <script src="js/view.js"></script>
 <script src="js/color.js"></script>
 <script src="js/layers.js"></script>

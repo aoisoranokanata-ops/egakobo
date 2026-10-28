@@ -11,10 +11,11 @@ const PRESETS = [
     { name: 'スマホ壁紙', w: 1290, h: 2796, dpi: 144 },
   ] },
   { group: 'マンガ', kind: 'manga', items: [
-    { name: 'B5 同人誌 モノクロ（600dpi・裁ち落とし込み）', w: mm(188, 600), h: mm(263, 600), dpi: 600 },
-    { name: 'B5 同人誌 カラー（350dpi・裁ち落とし込み）', w: mm(188, 350), h: mm(263, 350), dpi: 350 },
-    { name: 'A4 投稿 モノクロ（600dpi・裁ち落とし込み）', w: mm(216, 600), h: mm(303, 600), dpi: 600 },
-    { name: 'A5 同人誌（600dpi・裁ち落とし込み）', w: mm(154, 600), h: mm(216, 600), dpi: 600 },
+    { name: 'B5 同人誌 モノクロ（600dpi・裁ち落とし込み）', w: mm(188, 600), h: mm(263, 600), dpi: 600, book: 'b5' },
+    { name: 'B5 同人誌 カラー（350dpi・裁ち落とし込み）', w: mm(188, 350), h: mm(263, 350), dpi: 350, book: 'b5' },
+    { name: 'A4 投稿 モノクロ（600dpi・裁ち落とし込み）', w: mm(216, 600), h: mm(303, 600), dpi: 600, book: 'a4' },
+    { name: 'A5 同人誌（600dpi・裁ち落とし込み）', w: mm(154, 600), h: mm(216, 600), dpi: 600, book: 'a5' },
+    { name: 'B6 コミックス（600dpi・裁ち落とし込み）', w: mm(134, 600), h: mm(188, 600), dpi: 600, book: 'b6' },
   ] },
   { group: 'Webtoon', kind: 'webtoon', items: [
     { name: '縦スクロール 800×12800', w: 800, h: 12800, dpi: 144 },
@@ -32,14 +33,14 @@ const PRESETS = [
   ] },
   { group: 'グッズ・印刷物', items: [
     { name: '缶バッジ 57mm（巻き込み込み 70mm）', w: mm(70, 350), h: mm(70, 350), dpi: 350 },
-    { name: 'ポストカード（裁ち落とし込み）', w: mm(106, 350), h: mm(154, 350), dpi: 350 },
+    { name: 'ポストカード（裁ち落とし込み）', w: mm(106, 350), h: mm(154, 350), dpi: 350, book: 'postcard' },
     { name: 'アクリルスタンド A6', w: mm(105, 350), h: mm(148, 350), dpi: 350 },
     { name: 'A3 ポスター（350dpi）', w: mm(303, 350), h: mm(426, 350), dpi: 350 },
   ] },
 ];
 const MAX_PIXELS = 64e6;
 
-const DEFAULT_SETTINGS = { fingerDraws: 'auto', rotateGesture: true, tapUndo: true, pressureHard: 1, quickSliders: true, leftOpen: true, rightOpen: true };
+const DEFAULT_SETTINGS = { fingerDraws: 'auto', rotateGesture: true, tapUndo: true, pressureHard: 1, quickSliders: true, leftOpen: true, rightOpen: true, guides: true };
 
 class App {
   constructor() {
@@ -95,6 +96,8 @@ class App {
     this.adjustPanel = new AdjustPanel(this);
     this.textPanel = new TextPanel(this);
     this.selLauncher = new SelLauncher(this);
+    this.pageMgr = new PageManager(this);
+    this.work = null;                   // 開いているページの作品（複数ページの時）
     this.color.on(() => this.view.request());
     // 選択範囲の点線を動かす
     setInterval(() => { if (this.doc && this.doc.sel && !document.hidden && this.screen === 'editor') { this.view.ants = (this.view.ants + 1) % 16; this.view.request(); } }, 180);
@@ -234,7 +237,8 @@ class App {
   // ---- 画面
   showGallery() {
     this.screen = 'gallery';
-    $('#editor').hidden = true; $('#gallery').hidden = false;
+    $('#editor').hidden = true; $('#pages').hidden = true; $('#gallery').hidden = false;
+    this.work = null;
     this.renderGallery();
   }
   async renderGallery() {
@@ -249,7 +253,7 @@ class App {
       const more = el('button', { class: 'card-more', title: 'その他', onclick: (e) => { e.stopPropagation(); this.workMenu(w, more); } }, '⋯');
       grid.append(el('div', { class: 'card', onclick: () => this.openWork(w.id) },
         el('div', { class: 'card-img' }, img),
-        el('div', { class: 'card-info' }, el('div', { class: 'card-name' }, w.name), el('div', { class: 'card-meta' }, `${w.width}×${w.height}・${fmtDate(w.updated)}`)), more));
+        el('div', { class: 'card-info' }, el('div', { class: 'card-name' }, w.name), el('div', { class: 'card-meta' }, (w.pages ? `${w.pages.length}ページ・` : `${w.width}×${w.height}・`) + fmtDate(w.updated))), more));
     }
     const est = await Store.estimate();
     $('#galStorage').textContent = est ? `保存領域 ${fmtBytes(est.usage || 0)} 使用` : '';
@@ -257,25 +261,71 @@ class App {
   workMenu(w, anchor) {
     this.popup(anchor, [
       ['名前を変更', async () => { const n = await promptBox('作品名', w.name); if (n) { await Store.rename(w.id, n); this.renderGallery(); } }],
-      ['複製', async () => { this.busy('複製中…'); try { const d = await Store.loadDoc(w.id); d.workId = null; d._storedIds = null; d.name = w.name + ' のコピー'; await Store.saveDoc(d); d.comp.dispose(); } catch (e) { toast('複製できません: ' + e.message, { error: true }); } this.busy(null); this.renderGallery(); }],
-      ['作品ファイル（.egk）で書き出す', async () => { this.busy('書き出し中…'); try { const d = await Store.loadDoc(w.id); const b = await exportEgk(d); d.comp.dispose(); this.busy(null); await shareOrDownload(b, `${w.name}.egk`); } catch (e) { this.busy(null); toast('書き出せません: ' + e.message, { error: true }); } }],
-      ['PNG で書き出す', async () => { this.busy('書き出し中…'); try { const d = await Store.loadDoc(w.id); const b = await encodePNG(d); d.comp.dispose(); this.busy(null); await shareOrDownload(b, `${w.name}.png`); } catch (e) { this.busy(null); toast('書き出せません: ' + e.message, { error: true }); } }],
+      ['複製', async () => { this.busy('複製中…'); try { await Store.duplicate(w.id); } catch (e) { toast('複製できません: ' + e.message, { error: true }); } this.busy(null); this.renderGallery(); }],
+      ['作品ファイル（.egk）で書き出す', async () => {
+        this.busy('書き出し中…');
+        try { let b; if (w.pages) b = await exportWorkEgk(w.id); else { const d = await Store.loadDoc(w.id); b = await exportEgk(d); d.comp.dispose(); } this.busy(null); await shareOrDownload(b, `${w.name}.egk`); }
+        catch (e) { this.busy(null); toast('書き出せません: ' + e.message, { error: true }); }
+      }],
+      ...(w.pages ? [] : [['PNG で書き出す', async () => { this.busy('書き出し中…'); try { const d = await Store.loadDoc(w.id); const b = await encodePNG(d); d.comp.dispose(); this.busy(null); await shareOrDownload(b, `${w.name}.png`); } catch (e) { this.busy(null); toast('書き出せません: ' + e.message, { error: true }); } }]]),
       ['削除', async () => { if (await confirmBox('作品を削除', `「${w.name}」を削除します。元に戻せません。`, '削除', true)) { await Store.remove(w.id); this.renderGallery(); } }, 'danger'],
     ]);
   }
   async openWork(id) {
+    const work = await Store.getWork(id);
+    if (work && work.pages) { this.pageMgr.show(id); return; }
+    await this.openPage(id, id);
+  }
+  /* ページを開く（複数ページの作品なら、ページの並び・見開きの情報も付ける） */
+  async openPage(wid, pid) {
+    if (this.doc) { await this.saveNow(); }
     this.busy('開いています…');
-    try { const d = await Store.loadDoc(id); this.openDoc(d); } catch (e) { toast('開けません: ' + e.message, { error: true }); }
+    try {
+      const work = await Store.getWork(wid);
+      const d = await Store.loadDoc(wid, pid);
+      if (work.pages) {
+        const i = work.pages.findIndex((p) => p.id === d.pageId);
+        d.pageInfo = pageLayout(work)[i];
+        d.spread = !!work.pages[i].spread;
+        this.work = work;
+      } else this.work = null;
+      this.openDoc(d);
+    } catch (e) { toast('開けません: ' + e.message, { error: true }); }
     this.busy(null);
+  }
+  async goPage(dir) {
+    const w = this.work, d = this.doc;
+    if (!w || !d) return;
+    const ids = Store.pageIds(w), i = ids.indexOf(d.pageId) + dir;
+    if (i < 0 || i >= ids.length) { toast(dir > 0 ? '最後のページです' : '最初のページです', { ms: 900 }); return; }
+    await this.openPage(w.id, ids[i]);
+  }
+  refreshPageNav() {
+    const w = this.work, d = this.doc, nav = $('#pageNav');
+    nav.hidden = !(w && w.pages && d);
+    if (nav.hidden) return;
+    const ids = Store.pageIds(w), i = ids.indexOf(d.pageId);
+    $('#pageNum').textContent = d.pageInfo ? `${d.pageInfo.spread ? d.pageInfo.number + '–' + d.pageInfo.number2 : d.pageInfo.number}（${i + 1}/${ids.length}）` : `${i + 1}/${ids.length}`;
+  }
+  async bookSettings() {
+    const d = this.doc;
+    if (!d) return;
+    const b = await bookDialog(d.book || defaultBook());
+    if (!b) return;
+    d.book = b; d.metaDirty = true;
+    if (d.workId) { const w = await Store.getWork(d.workId); if (w) { w.book = b; await Store.putWork(w); if (this.work) { this.work = w; d.pageInfo = pageLayout(w)[Store.pageIds(w).indexOf(d.pageId)]; } } }
+    this.scheduleSave(); this.view.request(); this.refreshPageNav();
   }
   openDoc(doc) {
     if (this.doc && this.doc !== doc) this.doc.comp.dispose();
     this.doc = doc;
+    if (!doc.pageInfo && doc.book) doc.pageInfo = pageLayout({ id: doc.workId || 'x', book: doc.book })[0];
     doc.onChange = (kind) => this.onDocChange(kind);
     doc.history.onChange = () => this.refreshUndo();
     this.screen = 'editor';
-    $('#gallery').hidden = true; $('#editor').hidden = false;
+    $('#gallery').hidden = true; $('#pages').hidden = true; $('#editor').hidden = false;
     $('#docTitle').textContent = doc.name;
+    this.refreshPageNav();
     this.view.rot = 0; this.view.flip = false;
     this.view.fitted = true;
     requestAnimationFrame(() => { this.view.resize(); this.view.fit(); });
@@ -293,10 +343,11 @@ class App {
     this.closePanels();
     await this.saveNow();
     if (this.saveState === 'error' && !(await confirmBox('保存できていません', '保存に失敗しています。このまま作品一覧に戻りますか？（最後に保存した所までになります）', '戻る', true))) return;
+    const wid = this.doc.workId, pid = this.doc.pageId, multi = this.work && this.work.pages;
     this.doc.comp.dispose();
     this.doc = null;
     this.view.request();
-    this.showGallery();
+    if (multi) this.pageMgr.show(wid, pid); else this.showGallery();
   }
   onDocChange(kind) {
     this.view.request();
@@ -425,8 +476,12 @@ class App {
     const nameIn = el('input', { type: 'text', class: 'inp', value: '' });
     const paperSel = el('select', { class: 'sel' }, el('option', { value: '#ffffff' }, '白'), el('option', { value: '#f6f1e6' }, 'クリーム'), el('option', { value: '' }, '透明（用紙なし）'));
     const note = el('p', { class: 'hint' });
+    const pagesIn = el('input', { type: 'number', class: 'inp', min: 1, max: 400, value: 1 });
+    const bindSel = el('select', { class: 'sel' }, el('option', { value: 'right' }, '右綴じ'), el('option', { value: 'left' }, '左綴じ'));
+    const bookRow = el('div', { class: 'row3' }, el('div', {}, el('label', { class: 'lbl' }, 'ページ数'), pagesIn), el('div', {}, el('label', { class: 'lbl' }, '綴じ'), bindSel), el('div'));
     const upd = () => {
       wIn.value = sel.w; hIn.value = sel.h; dpiIn.value = sel.dpi;
+      bindSel.disabled = !sel.book;
       for (const b of $$('.preset', list)) b.classList.toggle('on', b._p === sel._p);
       check();
     };
@@ -448,13 +503,26 @@ class App {
     body.append(list, el('div', { class: 'newdoc-form' },
       el('label', { class: 'lbl' }, '作品名'), nameIn,
       el('div', { class: 'row3' }, el('div', {}, el('label', { class: 'lbl' }, '幅 px'), wIn), el('div', {}, el('label', { class: 'lbl' }, '高さ px'), hIn), el('div', {}, el('label', { class: 'lbl' }, '解像度 dpi'), dpiIn)),
-      el('label', { class: 'lbl' }, '用紙'), paperSel, note));
+      el('label', { class: 'lbl' }, '用紙'), paperSel, bookRow, note,
+      el('p', { class: 'hint' }, 'ページ数を 2 以上にすると、ページ管理のある作品になります（あとから足すこともできます）。マンガ原稿は仕上がり線・基本枠のガイドが出ます。')));
     upd();
     const ok = await modal({ title: '新規作成', body, wide: true, buttons: [{ label: 'キャンセル', value: false }, { label: '作成', value: true, primary: true }] });
     if (!ok) return;
     const w = Math.round(+wIn.value), h = Math.round(+hIn.value);
     if (!(w >= 16 && h >= 16) || w * h > MAX_PIXELS) { toast(`大きさは 16px 以上・${MAX_PIXELS / 1e6}M 画素までです`, { error: true }); return; }
-    const doc = Doc.create({ width: w, height: h, dpi: +dpiIn.value || 350, name: nameIn.value.trim() || sel.name.replace(/（.*$/, ''), paper: paperSel.value || null, kind: sel.kind });
+    const name = nameIn.value.trim() || sel.name.replace(/（.*$/, ''), dpi = +dpiIn.value || 350, pages = clamp(Math.round(+pagesIn.value || 1), 1, 400);
+    const book = sel.book && w === sel.w && h === sel.h ? { ...defaultBook(sel.book), binding: bindSel.value } : null;
+    if (pages > 1) {
+      this.busy(`${pages} ページを作っています…`);
+      try {
+        const work = await PageOps.create({ name, dpi, kind: sel.kind, book, pages, paper: paperSel.value || null, w, h });
+        this.busy(null);
+        await this.openPage(work.id, work.pages[0].id);
+      } catch (e) { this.busy(null); toast('作れませんでした: ' + e.message, { error: true }); }
+      return;
+    }
+    const doc = Doc.create({ width: w, height: h, dpi, name, paper: paperSel.value || null, kind: sel.kind });
+    doc.book = book;
     if (sel.kind === 'manga') {
       // マンガ: 下描き・線画・ベタ の3枚から始める（CSP の新規原稿と同じ考え方）
       const draft = doc.active; draft.name = '下描き'; draft.draft = true; draft.opacity = 0.5;
@@ -487,7 +555,11 @@ class App {
     const f = await pickFile('.egk,application/zip,application/octet-stream');
     if (!f) return;
     this.busy('読み込み中…');
-    try { const d = await importEgk(f); d.workId = null; this.openDoc(d); await this.saveNow(); }
+    try {
+      const z = unzipStore(await f.arrayBuffer());
+      if (z.get('work.json')) { const wid = await importWorkEgk(z, (f.name || '作品').replace(/\.egk$/i, '')); this.busy(null); this.pageMgr.show(wid); return; }
+      const d = await importEgk(f); d.workId = null; d.pageId = null; this.openDoc(d); await this.saveNow();
+    }
     catch (e) { toast('読み込めません: ' + e.message, { error: true }); }
     this.busy(null);
   }
@@ -592,6 +664,11 @@ class App {
         ['JPEG で書き出す', () => this.exportImage('jpeg')],
         ['2値 PNG（モノクロ原稿・1ビット）で書き出す', () => this.exportMono()],
         ['作品ファイル（.egk）で書き出す', () => this.exportEgkCurrent()],
+        ['書き出し（トンボ・ノンブル・全ページ・見開き）…', () => Exporter.dialog(this)],
+        ['Webtoon 用に分割して書き出す…', () => Exporter.webtoon(this)],
+        '-',
+        ['作品の設定（仕上がり・基本枠・綴じ・ノンブル）…', () => this.bookSettings()],
+        ['ページ管理', async () => { if (!this.doc) return; const wid = this.doc.workId; const w = await Store.getWork(wid); if (w && !w.pages) { PageOps.ensureMulti(w); await Store.putWork(w); } await this.closeDoc(); if (!this.work) this.pageMgr.show(wid); }],
         '-',
         ['今すぐ保存', async () => { await this.saveNow(); if (this.saveState === 'saved') toast('保存しました'); }],
         ['作品の情報', () => this.docInfo()],
@@ -676,6 +753,7 @@ class App {
         ['右に 15° 回転', () => this.view.rotateBy(Math.PI / 12)],
         ['回転を戻す', () => this.view.setRotation(0)],
         ['左右反転', () => this.view.toggleFlip(), 'H'],
+        ['仕上がり線・基本枠のガイド', () => { this.settings.guides = !this.settings.guides; this.saveSettings(); this.view.request(); }],
         '-',
         ['パネルを隠す／出す', () => this.togglePanels(), 'Tab'],
         ['設定', () => this.settingsDialog()],
@@ -742,6 +820,19 @@ class App {
     $('#btnFit').onclick = () => { this.view.setRotation(0); this.view.fit(); };
     $('#btnFlip').onclick = () => this.view.toggleFlip();
     $('#btnSnap').onclick = () => this.toggleSnap();
+    $('#pgPrev').onclick = () => this.goPage(-1);
+    $('#pgNext').onclick = () => this.goPage(1);
+    $('#pageNum').onclick = () => { if (this.work) this.closeDoc(); };
+    $('#pgBack').onclick = () => this.showGallery();
+    $('#pgAdd').onclick = () => this.pageMgr.addPage(false);
+    $('#pgAddSpread').onclick = () => this.pageMgr.addPage(true);
+    $('#pgSettings').onclick = () => this.pageMgr.settings();
+    $('#pgExport').onclick = async () => {
+      const w = this.pageMgr.work;
+      // 書き出しは1ページ目を開いてから（ページの絵を読むため）
+      await this.openPage(w.id, Store.pageIds(w)[0]);
+      Exporter.dialog(this);
+    };
     $('#btnSide').onclick = () => { this.settings.rightOpen = !this.settings.rightOpen; this.saveSettings(); this.applyPanels(); };
     $('#saveState').onclick = () => this.saveNow();
     $('#docTitle').onclick = () => this.renameDoc();
@@ -775,6 +866,7 @@ class App {
       if (mod && k === 'v') { e.preventDefault(); Clip.paste(this); return; }
       if (mod && e.shiftKey && k === 'n') { e.preventDefault(); LayerOps.add(this.doc); return; }
       if (mod) return;
+      if (k === 'pageup' || k === 'pagedown') { e.preventDefault(); this.goPage(k === 'pagedown' ? 1 : -1); return; }
       if (k === ' ') { this.view.spaceDown = true; e.preventDefault(); return; }
       if (k === 'tab') { e.preventDefault(); this.togglePanels(); return; }
       if (k === 'x') { this.color.swap(); return; }

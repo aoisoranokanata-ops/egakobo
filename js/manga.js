@@ -61,7 +61,10 @@ const FrameOps = {
     const W = (doc.width / dpi) * 25.4, H = (doc.height / dpi) * 25.4;
     // B5 同人誌（188×263mm）なら基本枠 150×220mm、それ以外は縦横 8% ずつ
     const b5 = Math.abs(W - 188) < 2 && Math.abs(H - 263) < 2;
-    const mx = b5 ? 19 : Math.round(W * 0.08), my = b5 ? 21.5 : Math.round(H * 0.08);
+    let mx = b5 ? 19 : Math.round(W * 0.08), my = b5 ? 21.5 : Math.round(H * 0.08);
+    // 作品の設定（基本枠）があれば、それに合わせる
+    const R = doc.book ? bookRects(doc) : null;
+    if (R && !doc.spread) { const f = R.frames[0]; mx = +((f.x / dpi) * 25.4).toFixed(1); my = +((f.y / dpi) * 25.4).toFixed(1); }
     const f = (label, v) => { const i = el('input', { type: 'number', class: 'inp', value: v, step: 0.5 }); return [i, el('div', {}, el('label', { class: 'lbl' }, label), i)]; };
     const [iT, eT] = f('上の余白 mm', my), [iB, eB] = f('下の余白 mm', my), [iL, eL] = f('左の余白 mm', mx), [iR, eR] = f('右の余白 mm', mx), [iW, eW] = f('枠線の太さ mm', 0.6);
     const body = el('div', {}, el('div', { class: 'row3' }, eT, eB, eW), el('div', { class: 'row3' }, eL, eR),
@@ -71,6 +74,12 @@ const FrameOps = {
     const px = (v) => mmToPx(+v || 0, dpi);
     const x0 = px(iL.value), y0 = px(iT.value), x1 = doc.width - px(iR.value), y1 = doc.height - px(iB.value);
     if (x1 - x0 < 10 || y1 - y0 < 10) { toast('余白が大きすぎます', { error: true }); return; }
+    if (R && doc.spread) {
+      // 見開き: 左右それぞれの基本枠にコマ枠
+      doc.structEdit('コマ枠を作成', () => { for (const f of R.frames) { const { f: fold, l } = this.make(doc, [{ x: f.x, y: f.y }, { x: f.x + f.w, y: f.y }, { x: f.x + f.w, y: f.y + f.h }, { x: f.x, y: f.y + f.h }], px(iW.value), this.nextName(doc)); LayerOps.placeNew(doc, fold); doc.activeId = l.id; } });
+      app.setTool('frame');
+      return;
+    }
     const { f: fold, l } = this.make(doc, [{ x: x0, y: y0 }, { x: x1, y: y0 }, { x: x1, y: y1 }, { x: x0, y: y1 }], px(iW.value), this.nextName(doc));
     doc.structEdit('コマ枠を作成', () => { LayerOps.placeNew(doc, fold); doc.activeId = l.id; });
     app.setTool('frame');

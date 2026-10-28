@@ -7,7 +7,7 @@
    変わったタイルだけ書く（doc.unsaved）。どのレイヤーが保存済みかは doc._storedIds で持つ。 */
 
 const FORMAT = 'egakobo';
-const FORMAT_VERSION = 3;          // 2: ベクター・テキスト・色調補正レイヤー・マスク 3: コマ枠・トーン・フキダシ・定規
+const FORMAT_VERSION = 4;          // 2: ベクター・テキスト・色調補正レイヤー・マスク 3: コマ枠・トーン・フキダシ・定規
 
 const Store = {
   db: null,
@@ -60,10 +60,15 @@ const Store = {
   },
   async getWork(id) { return this.tx(['works'], 'readonly', (w) => this.req(w.get(id))).then((p) => p); },
 
-  /* 保存。unsaved のタイル・未保存のレイヤー・消えたレイヤーを反映 */
+  /* 作品のページの id（1ページだけの古い作品は作品の id がページの id） */
+  pageIds(work) { return work.pages ? work.pages.map((p) => p.id) : [work.id]; },
+  async putWork(work) { await this.tx(['works'], 'readwrite', (w) => w.put(work)); },
+
+  /* ページを保存。unsaved のタイル・未保存のレイヤー・消えたレイヤーを反映し、作品の記録（サムネイル）も更新 */
   async saveDoc(doc, extra = {}) {
     if (!doc.workId) doc.workId = this.newId();
-    const id = doc.workId;
+    if (!doc.pageId) doc.pageId = doc.workId;
+    const id = doc.pageId, wid = doc.workId;
     if (!doc._storedIds) doc._storedIds = new Set();
     const live = doc.layers().filter(storedLayer);
     const liveIds = new Set(live.map((l) => l.id));
@@ -95,19 +100,19 @@ const Store = {
     const meta = docMeta(doc);
     const thumb = await this.makeThumb(doc);
     const now = Date.now();
-    const prev = await this.getWork(id);
-    const work = {
-      id, name: doc.name, width: doc.width, height: doc.height, dpi: doc.dpi, kind: doc.kind,
-      created: prev ? prev.created : now, updated: now, thumb, layers: live.length,
-      ...extra,
-    };
+    const prev = await this.getWork(wid);
+    const work = { ...(prev || {}), id: wid, name: doc.name, dpi: doc.dpi, kind: doc.kind, created: prev ? prev.created : now, updated: now, ...extra };
+    if (work.pages) {
+      work.pageThumbs = { ...(work.pageThumbs || {}), [id]: thumb };
+      if (work.pages[0].id === id) { work.thumb = thumb; work.width = doc.width; work.height = doc.height; }
+    } else { work.thumb = thumb; work.width = doc.width; work.height = doc.height; work.layers = live.length; }
     try {
       await this.tx(['works', 'docs', 'tiles'], 'readwrite', (w, d, t) => {
         w.put(work);
         d.put({ id, meta });
         for (const [k, v] of puts) t.put(v, k);
         for (const k of dels) t.delete(k);
-        for (const lid of gone) t.delete(IDBKeyRange.bound(`${id}|${lid}|`, `${id}|${lid}|￿`));
+        for (const lid of gone) t.delete(IDBKeyRange.bound(`${id}|${lid}|`, `${id}|${lid}|\uffff`));
       });
     } catch (e) { for (const w of want) doc.unsaved.add(w); throw e; }
     for (const l of live) doc._storedIds.add(l.id);
@@ -121,24 +126,55 @@ const Store = {
     return { type: 'image/jpeg', buf: await (await canvasToBlob(c, 'image/jpeg', 0.85)).arrayBuffer() };
   },
 
-  async loadDoc(id) {
-    const [work, data] = await this.tx(['works', 'docs'], 'readonly', (w, d) => Promise.all([this.req(w.get(id)), this.req(d.get(id))]));
-    if (!work || !data) throw new Error('作品が見つかりません');
-    const tiles = await this.tx(['tiles'], 'readonly', (t) => {
-      const range = IDBKeyRange.bound(`${id}|`, `${id}|￿`);
+  /* ページを読む（pageId を省くと1ページ目） */
+  async loadDoc(wid, pageId = null) {
+    const work = await this.getWork(wid);
+    if (!work) throw new Error('作品が見つかりません');
+    const ids = this.pageIds(work);
+    const id = pageId || ids[0];
+    const data = await this.tx(['docs'], 'readonly', (d) => this.req(d.get(id))).then((x) => x);
+    if (!data) throw new Error('ページが見つかりません');
+    const [keys, vals] = await this.tx(['tiles'], 'readonly', (t) => {
+      const range = IDBKeyRange.bound(`${id}|`, `${id}|\uffff`);
       return Promise.all([this.req(t.getAllKeys(range)), this.req(t.getAll(range))]);
     });
-    const [keys, vals] = await tiles;
     const files = new Map();
     keys.forEach((k, i) => { const p = k.split('|'); files.set(p[1] + '/' + p[2], vals[i]); });
     const doc = await docFromMeta(data.meta, async (lid, k) => { const v = files.get(lid + '/' + k); return v ? new Blob([v.buf], { type: v.type }) : null; }, work.name);
-    doc.workId = id;
+    doc.workId = wid;
+    doc.pageId = id;
+    doc.pageIndex = ids.indexOf(id);
+    doc.book = work.book || doc.book || null;
     doc._storedIds = new Set(doc.layers().filter(storedLayer).map((l) => l.id));
     doc.metaDirty = false;
     return doc;
   },
+  async removePageData(pid) {
+    await this.tx(['docs', 'tiles'], 'readwrite', (d, t) => { d.delete(pid); t.delete(IDBKeyRange.bound(`${pid}|`, `${pid}|\uffff`)); });
+  },
   async remove(id) {
-    await this.tx(['works', 'docs', 'tiles'], 'readwrite', (w, d, t) => { w.delete(id); d.delete(id); t.delete(IDBKeyRange.bound(`${id}|`, `${id}|￿`)); });
+    const work = await this.getWork(id);
+    const ids = work ? this.pageIds(work) : [id];
+    for (const pid of ids) await this.removePageData(pid);
+    await this.tx(['works'], 'readwrite', (w) => w.delete(id));
+  },
+  /* 作品を丸ごと複製（ページごとに読み直して新しい id で保存） */
+  async duplicate(id) {
+    const work = await this.getWork(id);
+    if (!work) return null;
+    const nid = this.newId(), ids = this.pageIds(work);
+    const nw = { ...work, id: nid, name: work.name + ' のコピー', created: Date.now(), updated: Date.now() };
+    const map = new Map();
+    if (work.pages) { nw.pages = work.pages.map((p) => { const np = { ...p, id: this.newId() }; map.set(p.id, np.id); return np; }); nw.pageThumbs = {}; }
+    else map.set(work.id, nid);
+    await this.putWork(nw);
+    for (const pid of ids) {
+      const d = await this.loadDoc(id, pid);
+      d.workId = nid; d.pageId = map.get(pid); d._storedIds = null; d.name = nw.name;
+      await this.saveDoc(d);
+      d.comp.dispose();
+    }
+    return nid;
   },
   async rename(id, name) {
     const work = await this.getWork(id);
@@ -169,7 +205,7 @@ function docMeta(doc) {
   };
   return {
     format: FORMAT, version: FORMAT_VERSION, width: doc.width, height: doc.height, dpi: doc.dpi, kind: doc.kind,
-    name: doc.name, active: doc.activeId, layers: doc.root.children.map(ser), app: APP_VERSION, ruler: doc.ruler,
+    name: doc.name, active: doc.activeId, layers: doc.root.children.map(ser), app: APP_VERSION, ruler: doc.ruler, book: doc.book || null, spread: !!doc.spread,
   };
 }
 /* JSON ＋ タイル画像の取り出し方 → 文書 */
@@ -196,6 +232,8 @@ async function docFromMeta(meta, getTile, name) {
   };
   doc.root.children = meta.layers.map(build);
   doc.ruler = meta.ruler || null;
+  doc.book = meta.book || null;
+  doc.spread = !!meta.spread;
   if (!doc.paper) { const p = new Layer('paper', '用紙'); doc.root.children.unshift(p); }
   // タイルを並行して読む（多すぎると iPad で詰まるので 16 本ずつ）
   for (let i = 0; i < jobs.length; i += 16) {
