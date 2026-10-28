@@ -46,7 +46,7 @@ const PRESETS = [
 ];
 const MAX_PIXELS = 64e6;
 
-const DEFAULT_SETTINGS = { fingerDraws: 'auto', rotateGesture: true, tapUndo: true, pressureHard: 1, quickSliders: true, leftOpen: true, rightOpen: true, guides: true };
+const DEFAULT_SETTINGS = { fingerDraws: 'auto', rotateGesture: true, tapUndo: true, pressureHard: 1, quickSliders: true, leftOpen: true, rightOpen: true, guides: true, quickAccess: true, leftHanded: false, keymap: {} };
 
 class App {
   constructor() {
@@ -107,6 +107,8 @@ class App {
     this.player = new Player(this);
     this.camTool = new CameraTool(this);
     this.cameraEdit = false;
+    this.quick = new QuickAccess(this);
+    this.matPanel = new MaterialPanel(this);
     this.work = null;                   // 開いているページの作品（複数ページの時）
     this.color.on(() => this.view.request());
     // 選択範囲の点線を動かす
@@ -270,7 +272,7 @@ class App {
       const more = el('button', { class: 'card-more', title: 'その他', onclick: (e) => { e.stopPropagation(); this.workMenu(w, more); } }, '⋯');
       grid.append(el('div', { class: 'card', onclick: () => this.openWork(w.id) },
         el('div', { class: 'card-img' }, img),
-        el('div', { class: 'card-info' }, el('div', { class: 'card-name' }, w.name), el('div', { class: 'card-meta' }, (w.pages ? `${w.pages.length}ページ・` : `${w.width}×${w.height}・`) + fmtDate(w.updated))), more));
+        el('div', { class: 'card-info' }, el('div', { class: 'card-name' }, w.name), el('div', { class: 'card-meta' }, (w.pages ? `${w.pages.length}ページ・` : `${w.width}×${w.height}・`) + fmtDate(w.updated) + (w.timeMs > 60000 ? `・${WorkTime.fmt(w.timeMs)}` : ''))), more));
     }
     const est = await Store.estimate();
     $('#galStorage').textContent = est ? `保存領域 ${fmtBytes(est.usage || 0)} 使用` : '';
@@ -343,6 +345,8 @@ class App {
     $('#gallery').hidden = true; $('#pages').hidden = true; $('#editor').hidden = false;
     $('#docTitle').textContent = doc.name;
     this.refreshPageNav();
+    this.applyPanels();
+    WorkTime.last = 0;
     this.cameraEdit = false;
     if (animFolders(doc).length || doc.kind === 'anime') ensureAnim(doc);
     this.timeline.toggle(!!(doc.anim && (doc.kind === 'anime' || animFolders(doc).length)));
@@ -369,9 +373,12 @@ class App {
     this.view.request();
     if (multi) this.pageMgr.show(wid, pid); else this.showGallery();
   }
+  get timelapseOn() { return !!(this.doc && this.doc.timelapse); }
   onDocChange(kind) {
     this.view.request();
     if (kind === 'quiet') return;
+    WorkTime.touch(this.doc);
+    if (kind === 'pixels' || kind === 'struct') Timelapse.capture(this);
     if (kind !== 'pixels' && this.timeline.open) this.timeline.render();
     if (kind !== 'pixels') this.layerPanel.refresh();
     this.selLauncher.refresh();
@@ -687,12 +694,14 @@ class App {
   docInfo() {
     const d = this.doc;
     if (!d) return;
+    if (d.workId) Store.getWork(d.workId).then((w) => { const e = $('#infoTime'); if (e) e.textContent = `作業時間: ${WorkTime.fmt(((w && w.timeMs) || 0) + (d._timeAdd || 0))}（操作の間が1分より短い時間を足したもの）`; });
     const rasters = d.layers().filter((l) => l.isRaster);
     const tiles = rasters.reduce((s, l) => s + l.tiles.size, 0);
     const mem = (tiles + d.comp.levels.reduce((s, m) => s + m.size, 0)) * TILE * TILE * 4;
     modal({ title: '作品の情報', body: el('div', {},
       el('p', {}, `大きさ: ${d.width} × ${d.height} px（${((d.width / d.dpi) * 25.4).toFixed(1)} × ${((d.height / d.dpi) * 25.4).toFixed(1)} mm・${d.dpi} dpi）`),
       el('p', {}, `レイヤー: ${rasters.length} 枚（描いてあるタイル ${tiles} 枚）`),
+      el('p', { id: 'infoTime' }, '作業時間: 計算中…'),
       el('p', {}, `使っているメモリの目安: ${fmtBytes(mem)}（取り消し用 ${fmtBytes(d.history.undoStack.reduce((s, c) => s + c.bytes, 0))} は別）`),
       el('p', { class: 'hint' }, `描工房 v${APP_VERSION}`)) });
   }
@@ -723,6 +732,8 @@ class App {
         ['Webtoon 用に分割して書き出す…', () => Exporter.webtoon(this)],
         '-',
         ['作品の設定（仕上がり・基本枠・綴じ・ノンブル）…', () => this.bookSettings()],
+        [this.timelapseOn ? 'タイムラプスの記録をやめる' : 'タイムラプスを記録する', () => { d().timelapse = !d().timelapse; d().metaDirty = true; this.scheduleSave(); toast(d().timelapse ? 'タイムラプスを記録します（描くたびに、4秒に1回まで）' : 'タイムラプスの記録をやめました'); if (d().timelapse) Timelapse.capture(this); }],
+        ['タイムラプスを書き出す（MP4）', () => Timelapse.export(this)],
         ['アニメーションを書き出す（MP4・GIF・連番）…', () => VideoExport.dialog(this)],
         ['ページ管理', async () => { if (!this.doc) return; const wid = this.doc.workId; const w = await Store.getWork(wid); if (w && !w.pages) { PageOps.ensureMulti(w); await Store.putWork(w); } await this.closeDoc(); if (!this.work) this.pageMgr.show(wid); }],
         '-',
@@ -787,6 +798,7 @@ class App {
         ['新規ラスターレイヤー', () => LayerOps.add(d()), '⇧⌘N'],
         ['新規フォルダー', () => LayerOps.add(d(), 'folder')],
         ['新規ベクターレイヤー', () => LayerOps.add(d(), 'vector')],
+        ['作業レイヤーを素材に保存', () => Materials.addFromLayer(this)],
         ['新規アニメーションフォルダー', () => { AnimOps.newFolder(this); this.timeline.toggle(true); }],
         ['レイヤーを複製', () => LayerOps.duplicate(d())],
         ['レイヤーを削除', () => LayerOps.remove(d())],
@@ -818,6 +830,10 @@ class App {
         ['仕上がり線・基本枠のガイド', () => { this.settings.guides = !this.settings.guides; this.saveSettings(); this.view.request(); }],
         '-',
         ['パネルを隠す／出す', () => this.togglePanels(), 'Tab'],
+        ['クイックアクセス', () => this.quick.toggle()],
+        ['オートアクション…', () => AutoActions.dialog(this)],
+        ['ショートカット設定…', () => keymapDialog(this)],
+        ['左利きの配置（道具を右に）', () => { this.settings.leftHanded = !this.settings.leftHanded; this.saveSettings(); this.applyPanels(); }],
         ['設定', () => this.settingsDialog()],
       ],
     };
@@ -855,6 +871,8 @@ class App {
 
   // ---- パネルの出し入れ
   applyPanels() {
+    $('#editor').classList.toggle('lefty', !!this.settings.leftHanded);
+    if (this.quick) this.quick.root.hidden = !this.settings.quickAccess || !this.doc;
     $('#editor').classList.toggle('no-left', !this.settings.leftOpen);
     $('#editor').classList.toggle('no-right', !this.settings.rightOpen);
     $('#btnSide').classList.toggle('on', this.settings.rightOpen);
@@ -900,7 +918,13 @@ class App {
     $('#docTitle').onclick = () => this.renameDoc();
     $('#updateBar button').onclick = () => location.reload();
     $('#updateBar .x').onclick = () => { $('#updateBar').hidden = true; };
-    for (const b of $$('[data-menu]')) b.onclick = () => this.popup(b, this.menus()[b.dataset.menu]);
+    for (const b of $$('[data-menu]')) b.onclick = () => {
+      const g = b.dataset.menu;
+      // オートアクションの記録のため、メニューの実行はコマンドとして通す
+      this.popup(b, this.menus()[g].map((it) => (it === '-' ? it : [it[0], () => { if (AutoActions.recording) AutoActions.recording.steps.push(`${g}:${it[0]}`); it[1](); }, it[2]])));
+    };
+    $('#recBadge').onclick = () => AutoActions.stop(this);
+    for (const b of $$('.rp-tab')) b.addEventListener('click', () => { if (b.dataset.focus === 'materials') setTimeout(() => this.matPanel.render(), 0); });
     // 右パネルのタブ（色・レイヤーの高さを入れ替え）
     for (const b of $$('.rp-tab')) b.onclick = () => { $('#rightpanel').dataset.focus = b.dataset.focus; };
     window.addEventListener('resize', () => this.closePopups());
@@ -910,6 +934,10 @@ class App {
       if (this.screen !== 'editor' || !this.doc) return;
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (document.querySelector('.modal-back')) return;
+      // 自分で決めたショートカット（初めからのものより先）
+      const combo = keyCombo(e), mine = combo && this.settings.keymap && this.settings.keymap[combo];
+      if (mine) { e.preventDefault(); Commands.run(this, mine); return; }
       const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
       if (mod && k === 'z') { e.preventDefault(); if (e.shiftKey) this.redo(); else this.undo(); return; }
       if (mod && k === 'y') { e.preventDefault(); this.redo(); return; }

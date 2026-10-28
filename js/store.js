@@ -14,11 +14,11 @@ const Store = {
   open() {
     if (this.db) return Promise.resolve(this.db);
     return new Promise((res, rej) => {
-      const rq = indexedDB.open('egakobo', 1);
+      const rq = indexedDB.open('egakobo', 2);
       rq.onupgradeneeded = () => {
         const db = rq.result;
-        for (const n of ['works', 'docs']) if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: 'id' });
-        if (!db.objectStoreNames.contains('tiles')) db.createObjectStore('tiles');
+        for (const n of ['works', 'docs', 'materials']) if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: 'id' });
+        for (const n of ['tiles', 'timelapse']) if (!db.objectStoreNames.contains(n)) db.createObjectStore(n);
       };
       rq.onsuccess = () => {
         const db = rq.result;
@@ -102,6 +102,8 @@ const Store = {
     const now = Date.now();
     const prev = await this.getWork(wid);
     const work = { ...(prev || {}), id: wid, name: doc.name, dpi: doc.dpi, kind: doc.kind, created: prev ? prev.created : now, updated: now, ...extra };
+    work.timeMs = ((prev && prev.timeMs) || 0) + (doc._timeAdd || 0);
+    const timeAdded = doc._timeAdd || 0;
     if (work.pages) {
       work.pageThumbs = { ...(work.pageThumbs || {}), [id]: thumb };
       if (work.pages[0].id === id) { work.thumb = thumb; work.width = doc.width; work.height = doc.height; }
@@ -117,6 +119,7 @@ const Store = {
     } catch (e) { for (const w of want) doc.unsaved.add(w); throw e; }
     for (const l of live) doc._storedIds.add(l.id);
     for (const lid of gone) doc._storedIds.delete(lid);
+    doc._timeAdd = Math.max(0, (doc._timeAdd || 0) - timeAdded);
     doc.metaDirty = false;
     return work;
   },
@@ -150,7 +153,7 @@ const Store = {
     return doc;
   },
   async removePageData(pid) {
-    await this.tx(['docs', 'tiles'], 'readwrite', (d, t) => { d.delete(pid); t.delete(IDBKeyRange.bound(`${pid}|`, `${pid}|\uffff`)); });
+    await this.tx(['docs', 'tiles', 'timelapse'], 'readwrite', (d, t, tl) => { d.delete(pid); t.delete(IDBKeyRange.bound(`${pid}|`, `${pid}|\uffff`)); tl.delete(IDBKeyRange.bound(`${pid}|`, `${pid}|\uffff`)); });
   },
   async remove(id) {
     const work = await this.getWork(id);
@@ -205,7 +208,7 @@ function docMeta(doc) {
   };
   return {
     format: FORMAT, version: FORMAT_VERSION, width: doc.width, height: doc.height, dpi: doc.dpi, kind: doc.kind,
-    name: doc.name, active: doc.activeId, layers: doc.root.children.map(ser), app: APP_VERSION, ruler: doc.ruler, book: doc.book || null, spread: !!doc.spread, anim: doc.anim || null, camera: doc.camera || null, goods: doc.goods || null,
+    name: doc.name, active: doc.activeId, layers: doc.root.children.map(ser), app: APP_VERSION, ruler: doc.ruler, book: doc.book || null, spread: !!doc.spread, anim: doc.anim || null, camera: doc.camera || null, goods: doc.goods || null, timelapse: !!doc.timelapse,
   };
 }
 /* JSON ＋ タイル画像の取り出し方 → 文書 */
@@ -237,6 +240,7 @@ async function docFromMeta(meta, getTile, name) {
   doc.anim = meta.anim || null;
   doc.camera = meta.camera || null;
   doc.goods = meta.goods || null;
+  doc.timelapse = !!meta.timelapse;
   if (!doc.paper) { const p = new Layer('paper', '用紙'); doc.root.children.unshift(p); }
   // タイルを並行して読む（多すぎると iPad で詰まるので 16 本ずつ）
   for (let i = 0; i < jobs.length; i += 16) {

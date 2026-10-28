@@ -8,7 +8,7 @@ class View {
   constructor(app, canvas) {
     this.app = app;
     this.canvas = canvas;
-    this.g = canvas.getContext('2d');
+    this.g = canvas.getContext('2d', { desynchronized: true }) || canvas.getContext('2d');
     this.s = 1; this.rot = 0; this.flip = false; this.ox = 0; this.oy = 0;
     this.dpr = window.devicePixelRatio || 1;
     this.cssW = 1; this.cssH = 1;
@@ -364,6 +364,9 @@ class View {
       const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [];
       if (evs.length > 1) for (const ce of evs) tool.move(this.pointInfo(ce), ce);
       else tool.move(this.pointInfo(e), e);
+      // 先読み: まだ届いていないペン先の位置（描き込まない・画面だけ）
+      const pr = e.getPredictedEvents ? e.getPredictedEvents() : [];
+      this.predicted = pr.length ? [this.toDoc(e.clientX, e.clientY), ...pr.map((q) => this.toDoc(q.clientX, q.clientY))] : null;
       this.request();
       return;
     }
@@ -390,6 +393,7 @@ class View {
     }
     if (this.mode === 'tool' && this.toolPointer && e.pointerId === this.toolPointer.id) {
       const tool = this.app.tool;
+      this.predicted = null;
       if (cancelled && tool.cancel) tool.cancel();
       else tool.up(this.pointInfo(e), e);
       this.mode = null; this.toolPointer = null;

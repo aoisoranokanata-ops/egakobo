@@ -8,13 +8,13 @@
    ネットワーク優先。iPad のホーム画面アプリでは待機中の SW が切り替わらないことがあるので、待機させない。
    ファイルを直したら、下の VERSION と js/util.js の APP_VERSION を必ず上げること。
    ------------------------------------------------------------ */
-const VERSION = '0.6.0';
+const VERSION = '1.0.0';
 const PREFIX = 'egakobo-';
 const CACHE = PREFIX + 'v' + VERSION;
 const ASSETS = [
   './', './index.html', './manifest.webmanifest', './css/app.css',
   './js/util.js', './js/doc.js', './js/selection.js', './js/compose.js', './js/brush.js', './js/vector.js', './js/text.js', './js/fill.js', './js/adjust.js', './js/transform.js',
-  './js/tools.js', './js/shapes.js', './js/seltools.js', './js/manga.js', './js/ruler.js', './js/book.js', './js/pages.js', './js/anim.js', './js/timeline.js', './js/video.js', './js/print.js', './js/goods.js', './js/view.js', './js/color.js', './js/layers.js', './js/panels.js', './js/store.js', './js/app.js',
+  './js/tools.js', './js/shapes.js', './js/seltools.js', './js/manga.js', './js/ruler.js', './js/book.js', './js/pages.js', './js/anim.js', './js/timeline.js', './js/video.js', './js/print.js', './js/goods.js', './js/efficiency.js', './js/view.js', './js/color.js', './js/layers.js', './js/panels.js', './js/store.js', './js/app.js',
   './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png',
 ];
 

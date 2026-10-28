@@ -66,6 +66,15 @@ class BrushTool {
     this.app.afterEdit();
   }
   cancel() { if (this.stroke) { this.stroke.cancel(); this.stroke = null; } }
+  drawOverlay(g, view) {
+    const p = view.predicted;
+    if (!p || !this.stroke || this.stroke.erase || p.length < 2) return;
+    g.save();
+    g.strokeStyle = this.app.color.main; g.globalAlpha = 0.55; g.lineCap = 'round';
+    g.lineWidth = Math.max(1, this.app.brush.size * view.s * 0.8);
+    g.beginPath(); p.forEach((q, i) => { const s = view.toScreen(q.x, q.y); if (i) g.lineTo(s.x, s.y); else g.moveTo(s.x, s.y); }); g.stroke();
+    g.restore();
+  }
 }
 
 class FillTool {
