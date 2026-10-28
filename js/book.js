@@ -8,6 +8,8 @@ const BOOK_SIZES = {
   a5: { label: 'A5（同人誌）', trimW: 148, trimH: 210, frameW: 120, frameH: 180 },
   b6: { label: 'B6（コミックス）', trimW: 128, trimH: 182, frameW: 106, frameH: 156 },
   postcard: { label: 'ポストカード', trimW: 100, trimH: 148, frameW: 88, frameH: 136 },
+  a3: { label: 'A3 ポスター', trimW: 297, trimH: 420, frameW: 277, frameH: 400 },
+  b2: { label: 'B2 ポスター', trimW: 515, trimH: 728, frameW: 495, frameH: 708 },
 };
 const NOMBRE_POS = [['bottom-outside', '下・外側'], ['bottom-center', '下・中央'], ['top-outside', '上・外側'], ['hidden', '隠しノンブル（のど側）']];
 function defaultBook(size = 'b5') {

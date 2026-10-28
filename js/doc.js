@@ -26,7 +26,7 @@ const BLEND_MODES = [
 const BLEND_OP = Object.fromEntries(BLEND_MODES.map((m) => [m.key, m.op]));
 
 /* 構造の履歴・保存で写す属性（text・adj は差し替えて使う＝中身を書き換えない） */
-const LAYER_PROPS = ['name', 'visible', 'opacity', 'blend', 'clip', 'locked', 'alphaLock', 'ref', 'draft', 'open', 'color', 'label', 'maskOn', 'text', 'adj', 'frame', 'tone', 'mono', 'anim', 'timing', 'lightTable'];
+const LAYER_PROPS = ['name', 'visible', 'opacity', 'blend', 'clip', 'locked', 'alphaLock', 'ref', 'draft', 'open', 'color', 'label', 'maskOn', 'text', 'adj', 'frame', 'tone', 'mono', 'anim', 'timing', 'lightTable', 'goodsLine'];
 const KIND_NAMES = { raster: 'ラスター', vector: 'ベクター', text: 'テキスト', adjust: '色調補正', balloon: 'フキダシ', folder: 'フォルダー', paper: '用紙' };
 
 let _layerSeq = 1;

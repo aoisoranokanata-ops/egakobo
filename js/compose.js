@@ -79,6 +79,7 @@ function composeTile(doc, g, tx, ty, opts = {}) {
   const o = { exportMode: false, filter: null, paper: true, preview: true, ...opts };
   renderList(doc, doc.root.children, g, tx, ty, 0, o);
   if (o.preview && doc.monoView && !o.exportMode) monoView(g);         // 画面のモノクロ2値表示
+  else if (o.preview && doc.cmykView && !o.exportMode) cmykProof(g);  // CMYK プレビュー
   // 文書の外にはみ出した画素は見せない
   const x0 = tx * TILE, y0 = ty * TILE;
   if (x0 + TILE > doc.width) g.clearRect(doc.width - x0, 0, TILE, TILE);

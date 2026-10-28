@@ -32,10 +32,16 @@ const PRESETS = [
     { name: 'アイコン 1000×1000', w: 1000, h: 1000, dpi: 144 },
   ] },
   { group: 'グッズ・印刷物', items: [
-    { name: '缶バッジ 57mm（巻き込み込み 70mm）', w: mm(70, 350), h: mm(70, 350), dpi: 350 },
+    { name: '缶バッジ 32mm（巻き込み込み 44mm）', w: mm(44, 350), h: mm(44, 350), dpi: 350, goods: { type: 'badge', face: 32, total: 44 } },
+    { name: '缶バッジ 44mm（巻き込み込み 56mm）', w: mm(56, 350), h: mm(56, 350), dpi: 350, goods: { type: 'badge', face: 44, total: 56 } },
+    { name: '缶バッジ 57mm（巻き込み込み 70mm）', w: mm(70, 350), h: mm(70, 350), dpi: 350, goods: { type: 'badge', face: 57, total: 70 } },
+    { name: '缶バッジ 76mm（巻き込み込み 90mm）', w: mm(90, 350), h: mm(90, 350), dpi: 350, goods: { type: 'badge', face: 76, total: 90 } },
+    { name: 'アクリルスタンド A6（カットライン用）', w: mm(105, 350), h: mm(148, 350), dpi: 350, goods: { type: 'acrylic' } },
+    { name: 'アクリルキーホルダー 60mm', w: mm(60, 350), h: mm(60, 350), dpi: 350, goods: { type: 'acrylic' } },
+    { name: 'ステッカー 100mm', w: mm(100, 350), h: mm(100, 350), dpi: 350, goods: { type: 'sticker' } },
     { name: 'ポストカード（裁ち落とし込み）', w: mm(106, 350), h: mm(154, 350), dpi: 350, book: 'postcard' },
-    { name: 'アクリルスタンド A6', w: mm(105, 350), h: mm(148, 350), dpi: 350 },
-    { name: 'A3 ポスター（350dpi）', w: mm(303, 350), h: mm(426, 350), dpi: 350 },
+    { name: 'A3 ポスター（裁ち落とし込み）', w: mm(303, 350), h: mm(426, 350), dpi: 350, book: 'a3' },
+    { name: 'B2 ポスター（裁ち落とし込み・200dpi）', w: mm(521, 200), h: mm(734, 200), dpi: 200, book: 'b2' },
   ] },
 ];
 const MAX_PIXELS = 64e6;
@@ -463,6 +469,7 @@ class App {
     $('#btnSnap').classList.toggle('on', !!(r && this.settings.snap));
   }
   toggleSnap() { this.settings.snap = !this.settings.snap; this.saveSettings(); this.onViewFlags(); this.view.request(); toast(this.settings.snap ? '定規に吸い付きます' : '定規に吸い付きません', { ms: 900 }); }
+  toggleCmykView() { const d = this.doc; if (!d) return; d.cmykView = !d.cmykView; d.invalidateAll(); this.view.request(); toast(d.cmykView ? 'CMYK プレビュー: 印刷したときの色の目安です（鮮やかな青・緑・蛍光色がくすみます）' : 'CMYK プレビューを終えました', { ms: 2600 }); }
   toggleMonoView() { const d = this.doc; if (!d) return; d.monoView = !d.monoView; d.invalidateAll(); this.view.request(); toast(d.monoView ? 'モノクロ2値で表示しています（印刷の見え方）' : 'カラーで表示しています', { ms: 1400 }); }
   async exportMono() {
     const d = this.doc;
@@ -561,6 +568,7 @@ class App {
     }
     const doc = Doc.create({ width: w, height: h, dpi, name, paper: paperSel.value || null, kind: sel.kind });
     doc.book = book;
+    doc.goods = sel.goods ? { ...sel.goods } : null;
     if (sel.kind === 'anime') {
       // アニメ: 背景レイヤー＋アニメーションフォルダー（セル 1）から
       ensureAnim(doc);
@@ -709,6 +717,7 @@ class App {
         ['PNG で書き出す', () => this.exportImage('png')],
         ['JPEG で書き出す', () => this.exportImage('jpeg')],
         ['2値 PNG（モノクロ原稿・1ビット）で書き出す', () => this.exportMono()],
+        ['作業レイヤーだけを PNG で書き出す（白版・カットラインなど）', () => GoodsOps.exportLayerPNG(this)],
         ['作品ファイル（.egk）で書き出す', () => this.exportEgkCurrent()],
         ['書き出し（トンボ・ノンブル・全ページ・見開き）…', () => Exporter.dialog(this)],
         ['Webtoon 用に分割して書き出す…', () => Exporter.webtoon(this)],
@@ -770,6 +779,8 @@ class App {
         [this.settings.snap ? '定規に吸い付かない' : '定規に吸い付く', () => this.toggleSnap()],
         '-',
         ['モノクロ2値で表示する／戻す', () => this.toggleMonoView()],
+        ['CMYK プレビュー（印刷の色の目安）', () => this.toggleCmykView()],
+        ['カットライン・白版を作る（グッズ）…', () => GoodsOps.cutLineDialog(this)],
         ['2値 PNG（1ビット）で書き出す', () => this.exportMono()],
       ],
       layer: [
@@ -803,6 +814,7 @@ class App {
         ['左右反転', () => this.view.toggleFlip(), 'H'],
         ['タイムライン（アニメーション）', () => this.timeline.toggle()],
         ['再生（プレーヤー）', () => this.player.show()],
+        ['CMYK プレビュー（印刷の色の目安）', () => this.toggleCmykView()],
         ['仕上がり線・基本枠のガイド', () => { this.settings.guides = !this.settings.guides; this.saveSettings(); this.view.request(); }],
         '-',
         ['パネルを隠す／出す', () => this.togglePanels(), 'Tab'],

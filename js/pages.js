@@ -160,13 +160,18 @@ class PageManager {
 
 /* ================= 書き出し ================= */
 /* 帯ごとに画素を作って PNG に流す（大きな原稿でも1枚の canvas を作らない）。fill(g, y0, h) が帯に描く */
-async function encodeBands(W, H, dpi, mode, fill) {
+/* 帯ごとに画素を作って Flate で流す（大きな原稿でも1枚の canvas を作らない）。fill(g, y0, h) が帯に描く。
+   mode: 'rgba' | 'rgb' | 'gray' | 'mono'（1ビット・白=1）| 'cmyk'（簡易変換・PDF 用）。
+   raw = true なら {idat, W, H, colors, bpc}（PDF の画像にそのまま使う: PNG と同じ行ごとのフィルタ付き）、false なら PNG の Blob */
+const BAND_MODES = { rgba: [4, 8], rgb: [3, 8], gray: [1, 8], mono: [1, 1], cmyk: [4, 8] };
+async function encodeBands(W, H, dpi, mode, fill, raw = false) {
+  const [colors, bpc] = BAND_MODES[mode];
   const cs = new CompressionStream('deflate');
   const writer = cs.writable.getWriter();
   const outP = new Response(cs.readable).arrayBuffer();
   const BH = 256, band = newCanvas(W, BH), bg = band.getContext('2d', { willReadFrequently: true });
-  const rowBytes = mode === 'mono' ? Math.ceil(W / 8) : W * 4;
-  const row = new Uint8Array(W * 4);
+  const rowBytes = Math.ceil((W * colors * bpc) / 8), bpp = Math.max(1, (colors * bpc) >> 3);
+  const row = new Uint8Array(rowBytes);
   for (let y0 = 0; y0 < H; y0 += BH) {
     const h = Math.min(BH, H - y0);
     bg.setTransform(1, 0, 0, 1, 0, 0); bg.globalAlpha = 1; bg.globalCompositeOperation = 'source-over';
@@ -178,32 +183,48 @@ async function encodeBands(W, H, dpi, mode, fill) {
       const o = j * (1 + rowBytes);
       if (mode === 'mono') {
         for (let i = 0; i < W; i++) {
-          const p = (j * W + i) * 4, a = px[p + 3] / 255;
-          const v = (px[p] * 0.299 + px[p + 1] * 0.587 + px[p + 2] * 0.114) * a + 255 * (1 - a);
+          const q = (j * W + i) * 4, a = px[q + 3] / 255;
+          const v = (px[q] * 0.299 + px[q + 1] * 0.587 + px[q + 2] * 0.114) * a + 255 * (1 - a);
           if (v >= 128) out[o + 1 + (i >> 3)] |= 0x80 >> (i & 7);
         }
-      } else {
-        row.set(px.subarray(j * W * 4, (j + 1) * W * 4));
-        pngFilterRow(row, 0, W, out, o);
+        continue;
       }
+      if (mode === 'rgba') row.set(px.subarray(j * W * 4, (j + 1) * W * 4));
+      else for (let i = 0; i < W; i++) {
+        // 白の上に重ねた色（透明を残さない）
+        const q = (j * W + i) * 4, a = px[q + 3] / 255, r = px[q] * a + 255 * (1 - a), g = px[q + 1] * a + 255 * (1 - a), b = px[q + 2] * a + 255 * (1 - a);
+        if (mode === 'rgb') { row[i * 3] = r; row[i * 3 + 1] = g; row[i * 3 + 2] = b; }
+        else if (mode === 'gray') row[i] = Math.round(r * 0.299 + g * 0.587 + b * 0.114);
+        else {
+          const k = 1 - Math.max(r, g, b) / 255, d = 1 - k || 1;
+          row[i * 4] = Math.round(((1 - r / 255 - k) / d) * 255); row[i * 4 + 1] = Math.round(((1 - g / 255 - k) / d) * 255);
+          row[i * 4 + 2] = Math.round(((1 - b / 255 - k) / d) * 255); row[i * 4 + 3] = Math.round(k * 255);
+        }
+      }
+      // フィルタ 1（左との差）
+      out[o] = 1;
+      for (let i = 0; i < bpp; i++) out[o + 1 + i] = row[i];
+      for (let i = bpp; i < rowBytes; i++) out[o + 1 + i] = (row[i] - row[i - bpp]) & 255;
     }
     await writer.write(out);
   }
   await writer.close();
   const idat = new Uint8Array(await outP);
+  if (raw) return { idat, W, H, colors, bpc, mode };
   const head = pngHeader(W, H, dpi);
-  if (mode === 'mono') { const ihdr = new Uint8Array(13), hv = new DataView(ihdr.buffer); hv.setUint32(0, W); hv.setUint32(4, H); ihdr[8] = 1; ihdr[9] = 0; head[1] = pngChunk('IHDR', ihdr); }
+  const ihdr = new Uint8Array(13), hv = new DataView(ihdr.buffer);
+  hv.setUint32(0, W); hv.setUint32(4, H); ihdr[8] = bpc; ihdr[9] = { rgba: 6, rgb: 2, gray: 0, mono: 0 }[mode];
+  head[1] = pngChunk('IHDR', ihdr);
   return new Blob([...head, pngChunk('IDAT', idat), pngChunk('IEND', new Uint8Array(0))], { type: 'image/png' });
 }
-/* ページを書き出す。opts: { crop: 'full'|'trim'|'marks', nombre, format: 'png'|'mono'|'jpeg' } */
-async function exportPage(doc, opts) {
+/* ページの出力の段取り: 大きさ・原稿の位置・帯に描く関数・仕上がりの枠（出力の座標） */
+function pagePlan(doc, opts) {
   const book = doc.book;
   let W = doc.width, H = doc.height, ox = 0, oy = 0;
   const px = (mm) => (mm / 25.4) * doc.dpi;
   if (book && opts.crop === 'trim') { const R = bookRects(doc); W = Math.round(R.trim.w); H = Math.round(R.trim.h); ox = -Math.round(R.trim.x); oy = -Math.round(R.trim.y); }
   if (book && opts.crop === 'marks') { const m = Math.round(px(15)); W = doc.width + m * 2; H = doc.height + m * 2; ox = oy = m; }
   const white = opts.format !== 'png' || opts.crop === 'marks';
-  // 原稿のタイルを1段ずつ合成して使い回す
   const cache = new Map(), tmp = newCanvas(TILE, TILE), tg = ctx2d(tmp);
   const tileAt = (tx, ty) => {
     const k = tkey(tx, ty);
@@ -227,15 +248,32 @@ async function exportPage(doc, opts) {
     if (book && opts.crop === 'marks') drawCropMarks(g, doc, ox, oy);
     g.restore();
   };
+  let trim = null;
+  if (book) { const R = bookRects(doc); trim = { x: R.trim.x + ox, y: R.trim.y + oy, w: R.trim.w, h: R.trim.h }; }
+  const bleed = book && opts.crop !== 'trim' ? { x: ox, y: oy, w: doc.width, h: doc.height } : null;
+  if (book && opts.crop === 'trim') trim = { x: 0, y: 0, w: W, h: H };
+  return { W, H, fill, trim, bleed, dispose: () => { for (const c of cache.values()) TilePool.put(c); cache.clear(); } };
+}
+/* ページを書き出す。opts: { crop: 'full'|'trim'|'marks', nombre, format: 'png'|'gray'|'mono'|'jpeg' } */
+async function exportPage(doc, opts) {
+  const P = pagePlan(doc, opts);
   try {
     if (opts.format === 'jpeg') {
-      if (W * H > 16.7e6) throw new Error('大きすぎて JPEG にできません（PNG にしてください）');
-      const c = newCanvas(W, H), g = c.getContext('2d');
-      for (let y0 = 0; y0 < H; y0 += 256) { g.save(); g.beginPath(); g.rect(0, y0, W, 256); g.clip(); g.translate(0, y0); fill(g, y0, Math.min(256, H - y0)); g.restore(); }
+      if (P.W * P.H > 16.7e6) throw new Error('大きすぎて JPEG にできません（PNG にしてください）');
+      const c = newCanvas(P.W, P.H), g = c.getContext('2d');
+      for (let y0 = 0; y0 < P.H; y0 += 256) { g.save(); g.beginPath(); g.rect(0, y0, P.W, 256); g.clip(); g.translate(0, y0); P.fill(g, y0, Math.min(256, P.H - y0)); g.restore(); }
       return await canvasToBlob(c, 'image/jpeg', 0.92);
     }
-    return await encodeBands(W, H, doc.dpi, opts.format === 'mono' ? 'mono' : 'rgba', fill);
-  } finally { for (const c of cache.values()) TilePool.put(c); }
+    return await encodeBands(P.W, P.H, doc.dpi, { png: 'rgba', gray: 'gray', mono: 'mono' }[opts.format] || 'rgba', P.fill);
+  } finally { P.dispose(); }
+}
+/* PDF の1ページぶん（画像の Flate ストリームと枠） */
+async function pdfPage(doc, opts, color) {
+  const P = pagePlan(doc, { ...opts, format: 'pdf' });
+  try {
+    const img = await encodeBands(P.W, P.H, doc.dpi, color, P.fill, true);
+    return { img, dpi: doc.dpi, trim: P.trim, bleed: P.bleed };
+  } finally { P.dispose(); }
 }
 
 const Exporter = {
@@ -246,21 +284,56 @@ const Exporter = {
     const book = doc.book;
     const seg = (opts, val) => { const b = el('div', { class: 'seg' }); b.value = val; for (const [v, t] of opts) b.append(el('button', { class: v === val ? 'on' : '', onclick: (e) => { b.value = v; for (const x of b.children) x.classList.remove('on'); e.target.classList.add('on'); } }, t)); return b; };
     const range = seg([['page', 'このページ'], ...(multi ? [['all', `全ページ（${work.pages.length}）`], ['spreads', '見開きの確認用 JPEG']] : [])], 'page');
-    const format = seg([['png', 'PNG（カラー）'], ['mono', '2値 PNG（モノクロ原稿）'], ['jpeg', 'JPEG']], doc.kind === 'manga' ? 'mono' : 'png');
+    const format = seg([['png', 'PNG（カラー）'], ['gray', 'PNG（グレー）'], ['mono', '2値 PNG（モノクロ原稿）'], ['jpeg', 'JPEG'], ['pdf', 'PDF（入稿用）'], ['psd', 'PSD（レイヤー付き）']], doc.kind === 'manga' ? 'mono' : 'png');
+    const pdfColor = seg([['rgb', 'カラー（RGB）'], ['gray', 'グレー'], ['mono', '2値（1ビット）'], ['cmyk', 'CMYK（簡易変換）']], doc.kind === 'manga' ? 'mono' : 'rgb');
     const crop = seg(book ? [['full', '裁ち落とし込み（原稿のまま）'], ['trim', '仕上がりで切る'], ['marks', 'トンボを付ける']] : [['full', '原稿のまま']], 'full');
     const nom = el('input', { type: 'checkbox', checked: book && book.nombre && book.nombre.on ? true : null, disabled: !book || null });
     const body = el('div', { class: 'settings' },
       el('div', { class: 'set-row col' }, el('span', {}, '範囲'), range),
       el('div', { class: 'set-row col' }, el('span', {}, '形式'), format),
       el('div', { class: 'set-row col' }, el('span', {}, '大きさ'), crop),
+      el('div', { class: 'set-row col' }, el('span', {}, 'PDF の色'), pdfColor),
       el('div', { class: 'set-row' }, el('span', {}, 'ノンブルを入れる'), nom),
-      el('p', { class: 'hint' }, '入稿は印刷所の指定に合わせてください（よくある指定: モノクロ 600dpi 2値・裁ち落とし込み、カラー 350dpi）。全ページはまとめて zip にします。'));
+      el('p', { class: 'hint' }, '入稿は印刷所の指定に合わせてください（よくある指定: モノクロ 600dpi 2値・裁ち落とし込み、カラー 350dpi）。全ページは PNG なら zip、PDF なら1つの PDF にまとめます。PDF には仕上がりの枠（TrimBox）も入ります。CMYK は色の簡易変換です（印刷所の変換の方が正確です）。PSD はレイヤー付き（色調補正レイヤーは入りません）。'));
     const ok = await modal({ title: '書き出し', body, wide: true, buttons: [{ label: 'キャンセル', value: false }, { label: '書き出す', value: true, primary: true }] });
     if (!ok) return;
-    const opts = { crop: crop.value, format: format.value, nombre: nom.checked };
+    const opts = { crop: crop.value, format: format.value, nombre: nom.checked, pdfColor: pdfColor.value };
     await app.saveNow();
     app.busy('書き出しています…');
     try {
+      if (opts.format === 'pdf' && range.value !== 'spreads') {
+        const lay = work ? pageLayout({ ...work, book: work.book || doc.book }) : null;
+        const pages = [];
+        if (range.value === 'page') {
+          if (lay) doc.pageInfo = lay[Math.max(0, Store.pageIds(work).indexOf(doc.pageId))];
+          pages.push(await pdfPage(doc, opts, opts.pdfColor));
+        } else {
+          for (let i = 0; i < lay.length; i++) {
+            app.busy(`PDF にしています… ${i + 1} / ${lay.length}`);
+            const d = await Store.loadDoc(work.id, lay[i].id);
+            d.pageInfo = lay[i]; d.spread = lay[i].spread;
+            pages.push(await pdfPage(d, opts, opts.pdfColor));
+            d.comp.dispose();
+          }
+        }
+        const blob = buildPDF(pages, doc.name);
+        app.busy(null);
+        await shareOrDownload(blob, `${range.value === 'all' ? work.name + '_全ページ' : doc.name}.pdf`);
+        return;
+      }
+      if (opts.format === 'psd' && range.value !== 'spreads') {
+        if (range.value === 'page') { const b = await encodePSD(doc, (m) => app.busy(m)); app.busy(null); await shareOrDownload(b, `${doc.name}.psd`); return; }
+        const lay = pageLayout(work), files = [];
+        for (let i = 0; i < lay.length; i++) {
+          app.busy(`PSD にしています… ${i + 1} / ${lay.length}`);
+          const d = await Store.loadDoc(work.id, lay[i].id);
+          files.push({ name: `${work.name}_${String(lay[i].number).padStart(3, '0')}.psd`, data: new Uint8Array(await (await encodePSD(d)).arrayBuffer()) });
+          d.comp.dispose();
+        }
+        app.busy(null);
+        await shareOrDownload(zipStore(files), `${work.name}_PSD.zip`);
+        return;
+      }
       if (range.value === 'page') {
         if (work) doc.pageInfo = pageLayout({ ...work, book: work.book || doc.book })[Math.max(0, Store.pageIds(work).indexOf(doc.pageId))];
         const blob = await exportPage(doc, opts);

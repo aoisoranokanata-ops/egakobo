@@ -189,6 +189,7 @@ class View {
     }
     // 仕上がり線・基本枠・ノンブル
     if (d.book && this.app.settings.guides) drawBookGuides(g, this, d);
+    if (d.goods && this.app.settings.guides) drawGoodsGuides(g, this, d);
     // 定規
     if (d.ruler) drawRuler(g, this, d.ruler, this.app.settings.snap);
     // ツールの補助表示（画面座標）
